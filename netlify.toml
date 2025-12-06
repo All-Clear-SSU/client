@@ -1,0 +1,13 @@
+# netlify.toml
+[[redirects]]
+  from = "/api/*"
+  to = "http://16.184.55.244:8080/:splat"
+  status = 200
+  force = true
+
+# SockJS / STOMP WebSocket 프록시
+[[redirects]]
+  from = "/ws"
+  to = "http://16.184.55.244:8080/ws"
+  status = 200
+  force = true

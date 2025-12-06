@@ -1,0 +1,83 @@
+<!-- public/hls-test.html -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Raw HLS Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+      body { background:#111; color:#eee; font-family:system-ui, sans-serif; }
+      .wrap { max-width: 900px; margin: 40px auto; }
+      video { width: 100%; max-width: 860px; height: 480px; background:#000; }
+      pre { background:#222; padding:10px; overflow:auto; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Raw HLS Test (no React)</h1>
+      <p id="info"></p>
+      <video id="video" controls autoplay muted playsinline></video>
+      <h3>Logs</h3>
+      <pre id="log"></pre>
+    </div>
+    <script>
+      const url = "http://16.184.55.244/streams/cctv1/playlist.m3u8"; // 스웨거 응답 그대로
+      const info = document.getElementById("info");
+      const logEl = document.getElementById("log");
+      const video = document.getElementById("video");
+
+      function log(...args) {
+        console.log(...args);
+        logEl.textContent += args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ') + "\n";
+      }
+
+      info.textContent = "URL: " + url;
+
+      if (window.Hls && Hls.isSupported()) {
+        const hls = new Hls({
+          // 필요시 디버깅용 옵션을 켜 보세요
+          // enableWorker: true,
+          // lowLatencyMode: true,
+          // backBufferLength: 90,
+        });
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+          log("[HLS] MEDIA_ATTACHED");
+          hls.loadSource(url);
+        });
+
+        hls.on(Hls.Events.MANIFEST_PARSED, (evt, data) => {
+          log("[HLS] MANIFEST_PARSED", { levels: data.levels?.length });
+          video.play().catch(e => log("video.play() error:", e.message));
+        });
+
+        hls.on(Hls.Events.ERROR, (evt, data) => {
+          log("[HLS ERROR]", data.type, data.details, { fatal: data.fatal, response: data.response });
+          if (data.fatal) {
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                log("fatal NETWORK_ERROR: recovering");
+                hls.startLoad();
+                break;
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                log("fatal MEDIA_ERROR: recovering");
+                hls.recoverMediaError();
+                break;
+              default:
+                log("fatal OTHER: destroying hls");
+                hls.destroy();
+                break;
+            }
+          }
+        });
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        // Safari(네이티브 HLS)
+        log("[HLS] Native playback path (Safari)");
+        video.src = url;
+        video.addEventListener("loadedmetadata", () => video.play().catch(e => log("video.play() error:", e.message)));
+      } else {
+        log("HLS not supported in this browser.");
+      }
+    </script>
+  </body>
+</html>

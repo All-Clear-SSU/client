@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    /* ✅ composite 추가 (tsBuildInfoFile 사용 시 필수) */
+    "composite": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+
+    /* ✅ ECMAScript 설정 (ESNext로 변경) */
+    "target": "esnext",
+    "lib": ["esnext"],
+    "module": "ESNext",
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* ✅ 번들러 모드 (Vite 호환) */
+    "moduleResolution": "Bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* ✅ 코드 품질 설정 */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    /* ✅ 경로 alias */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+
+  "include": ["vite.config.ts", "scripts", "config"]
+}
