@@ -28,12 +28,27 @@ export function DetailPanel({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
 
-  // 🔥 테스트용: 항상 CCTV 1번 스트림을 재생
-  const TEST_HLS_URL =
-    "http://16.184.55.244:8080/streams/cctv1/playlist.m3u8";
+  // 🔥 기존 코드 (주석처리) - 하드코딩된 CCTV1 URL
+  // const TEST_HLS_URL = "http://16.184.55.244:8080/streams/cctv1/playlist.m3u8";
+  // const effectiveUrl = TEST_HLS_URL;
 
-  // ❗ DetailPanel에서도 고정 URL만 사용
-  const effectiveUrl = TEST_HLS_URL;
+  // ✅ 수정된 코드: CCTV ID에 따라 동적으로 HLS URL 생성
+  // useRef로 이전 cctvId를 기억하여 실제로 변경될 때만 URL 업데이트
+  const cctvId = survivor?.lastDetection?.cctvId;
+  const prevCctvIdRef = useRef<number | null | undefined>(null);
+  const urlRef = useRef<string | null>(null);
+
+  // cctvId가 실제로 변경되었을 때만 URL 재생성
+  if (prevCctvIdRef.current !== cctvId) {
+    console.log(`[DetailPanel] cctvId 변경: ${prevCctvIdRef.current} → ${cctvId}`);
+    prevCctvIdRef.current = cctvId;
+    urlRef.current = cctvId
+      ? `${import.meta.env.VITE_API_BASE || "http://16.184.55.244:8080"}/streams/cctv${cctvId}/playlist.m3u8`
+      : null;
+    console.log(`[DetailPanel] 새 URL 생성:`, urlRef.current);
+  }
+
+  const effectiveUrl = urlRef.current;
 
   // ----------------------------------------------------------
   // 🔥 survivor 변경 → AI 분석 정보 불러오기
@@ -49,41 +64,78 @@ export function DetailPanel({
   // ----------------------------------------------------------
   // 🔥 DetailPanel 비디오에서도 HLS.js attach/destroy
   // ----------------------------------------------------------
+  const currentLoadedUrlRef = useRef<string | null>(null); // 현재 로드된 URL 추적
+
   useEffect(() => {
     const video = videoRef.current;
     if (!effectiveUrl || !video) {
-      hlsRef.current?.destroy();
-      hlsRef.current = null;
+      // URL이 없으면 HLS 정리
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+        currentLoadedUrlRef.current = null;
+      }
       return;
     }
 
+    // ✅ 핵심: 이미 같은 URL이 로드되어 있으면 아무것도 하지 않음
+    if (currentLoadedUrlRef.current === effectiveUrl && hlsRef.current) {
+      console.log("[HLS] Same URL, skipping reload:", effectiveUrl);
+      return;
+    }
+
+    console.log("[HLS] Loading new URL:", effectiveUrl);
+    currentLoadedUrlRef.current = effectiveUrl;
+
     if (Hls.isSupported()) {
-      if (!hlsRef.current) {
-        hlsRef.current = new Hls({ enableWorker: true });
+      // ✅ HLS 인스턴스 재사용: 이미 있으면 loadSource만 호출
+      if (hlsRef.current) {
+        // 기존 HLS 인스턴스가 있으면 URL만 변경
+        hlsRef.current.loadSource(effectiveUrl);
+      } else {
+        // 처음 생성할 때만 새 인스턴스 생성
+        hlsRef.current = new Hls({
+          enableWorker: true,
+          // ✅ 스트리밍 끊김 방지를 위한 설정
+          maxBufferLength: 30,        // 버퍼 길이 증가
+          maxMaxBufferLength: 60,     // 최대 버퍼 길이 증가
+          liveSyncDuration: 3,        // 라이브 동기화 지연 시간
+          liveMaxLatencyDuration: 10, // 최대 지연 시간
+        });
+
+        const hls = hlsRef.current;
+        hls.loadSource(effectiveUrl);
+        hls.attachMedia(video);
+
+        hls.on(Hls.Events.ERROR, (_, data) => {
+          console.error(
+            "[HLS ERROR - DetailPanel]",
+            data.type,
+            data.details,
+            data.response?.code,
+            effectiveUrl
+          );
+        });
       }
-
-      const hls = hlsRef.current;
-      hls.loadSource(effectiveUrl);
-      hls.attachMedia(video);
-
-      hls.on(Hls.Events.ERROR, (_, data) => {
-        console.error(
-          "[HLS ERROR - DetailPanel]",
-          data.type,
-          data.details,
-          data.response?.code,
-          effectiveUrl
-        );
-      });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = effectiveUrl;
     }
 
+    // ✅ cleanup 시 destroy하지 않음 - 컴포넌트 언마운트 시에만 정리
     return () => {
-      hlsRef.current?.destroy();
-      hlsRef.current = null;
+      // 아무것도 하지 않음 - HLS 인스턴스 유지
     };
-  }, [effectiveUrl, survivor?.id]);
+  }, [effectiveUrl]);
+
+  // ✅ 컴포넌트 언마운트 시에만 HLS 정리
+  useEffect(() => {
+    return () => {
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+    };
+  }, []);
 
   // ----------------------------------------------------------
   // 🔥 생존자 선택 안된 경우
@@ -106,9 +158,9 @@ export function DetailPanel({
   const finalRisk = survivor.riskScore;
 
   const riskColor =
-    finalRisk >= 18
+    finalRisk >= 3.0
       ? "text-red-500"
-      : finalRisk >= 12
+      : finalRisk >= 1.0
       ? "text-orange-500"
       : "text-green-500";
 
@@ -138,7 +190,7 @@ export function DetailPanel({
           <div className="bg-slate-800 border border-slate-700 rounded-lg w-full h-[220px] overflow-hidden relative">
             {effectiveUrl ? (
               <video
-                key={effectiveUrl + (survivor?.id ?? "")}  // 👈 생존자 변경 시 강제 리렌더링
+                key={effectiveUrl}  // ✅ URL만으로 key 설정 (survivor.id 제거)
                 ref={videoRef}
                 className="absolute inset-0 w-full h-full object-cover rounded"
                 autoPlay

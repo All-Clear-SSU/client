@@ -1,11 +1,9 @@
 // ===============================
 //  API BASE URL
 // ===============================
-
-export const API_BASE = import.meta.env.VITE_API_BASE || "/api";
-
-if (!API_BASE) {
-  console.warn("⚠️ VITE_API_BASE가 설정되지 않음. 기본값 /api 사용");
+ export const API_BASE = import.meta.env.VITE_API_BASE || "/api";
+ if (!API_BASE) {
+   console.warn("⚠️ VITE_API_BASE가 설정되지 않음. 기본값 /api 사용");
 }
 
 // ===============================
@@ -38,6 +36,7 @@ export type ApiSurvivor = {
 export type Detection = {
   id: number;
   survivorId: number;
+  cctvId?: number | null; // ✅ CCTV ID 추가
   detectedAt: string;
   detectedStatus: string;
   aiAnalysisResult: string;
@@ -128,8 +127,9 @@ const mapRescue = {
   CANCELED: "pending",
 } as const;
 
+// ✅ 초기 점수를 0으로 설정 (WebSocket으로 실제 점수 업데이트 대기)
 function estimateRiskScore(): number {
-  return 10;
+  return 0;
 }
 
 // ===============================
@@ -143,31 +143,48 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
 
   const arr: ApiSurvivor[] = await res.json();
 
-  return arr.map((a, i) => ({
-    id: String(a.id),
-    rank: 0,
-    riskScore: estimateRiskScore(),
+  // ✅ 각 생존자의 최신 위험도 점수를 병렬로 가져오기
+  const survivorsWithScores = await Promise.all(
+    arr.map(async (a, i) => {
+      let riskScore = estimateRiskScore(); // 기본값 0
 
-    location: a.location?.buildingName ?? "Unknown",
-    floor: a.location?.floor ?? 0,
-    room: a.location?.fullAddress ?? a.location?.roomNumber ?? "-",
+      try {
+        const priorityData = await fetchLatestPriority(String(a.id));
+        riskScore = priorityData.finalRiskScore ?? 0;
+      } catch (err) {
+        // 위험도 점수가 없는 경우 0으로 유지
+        console.warn(`생존자 ${a.id}의 위험도 점수를 가져올 수 없습니다.`);
+      }
 
-    status: mapStatus[a.currentStatus],
-    detectionMethod: mapMethod[a.detectionMethod],
-    rescueStatus: mapRescue[a.rescueStatus],
+      return {
+        id: String(a.id),
+        rank: 0,
+        riskScore,
 
-    x: 50 + ((i * 7) % 40),
-    y: 50 + ((i * 11) % 40),
+        location: a.location?.buildingName ?? "Unknown",
+        floor: a.location?.floor ?? 0,
+        room: a.location?.fullAddress ?? a.location?.roomNumber ?? "-",
 
-    lastDetection: null,
-    videoUrl: null,
-    hlsUrl: null,
-    poseLabel: null,
-    poseConfidence: null,
+        status: mapStatus[a.currentStatus],
+        detectionMethod: mapMethod[a.detectionMethod],
+        rescueStatus: mapRescue[a.rescueStatus],
 
-    /** 🔥 백엔드에서 survivor.wifiSensorId 주면 자동으로 반영됨 */
-    wifiSensorId: null,
-  }));
+        x: 50 + ((i * 7) % 40),
+        y: 50 + ((i * 11) % 40),
+
+        lastDetection: null,
+        videoUrl: null,
+        hlsUrl: null,
+        poseLabel: null,
+        poseConfidence: null,
+
+        /** 🔥 백엔드에서 survivor.wifiSensorId 주면 자동으로 반영됨 */
+        wifiSensorId: null,
+      };
+    })
+  );
+
+  return survivorsWithScores;
 }
 
 // ===============================

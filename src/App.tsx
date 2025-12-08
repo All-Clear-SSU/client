@@ -13,11 +13,11 @@ import { fetchSurvivors, updateRescueStatus, deleteSurvivor } from "./lib/api";
 import { getStompClient } from "./lib/socket";
 import type { IMessage, StompSubscription } from "@stomp/stompjs";
 
-// ✅ NEW: 라이브 스트리밍 API
-import {
-  startLiveStream,
-  getLiveStreamUrl,
-} from "./lib/liveStreamApi";
+// 🔥 기존 코드 (주석처리) - 라이브 스트림 API는 동적 URL 생성으로 대체됨
+// import {
+//   startLiveStream,
+//   getLiveStreamUrl,
+// } from "./lib/liveStreamApi";
 
 export default function App() {
   const [survivors, setSurvivors] = useState<Survivor[]>([]);
@@ -88,7 +88,15 @@ export default function App() {
         setSurvivors((prev) => {
           const merged = data.map((n) => {
             const old = prev.find((p) => p.id === n.id);
-            return old ? { ...n, riskScore: old.riskScore } : n;
+            // ✅ WebSocket으로 업데이트된 실시간 데이터 보존
+            return old ? {
+              ...n,
+              riskScore: old.riskScore,
+              lastDetection: old.lastDetection,  // ✅ Detection 보존
+              hlsUrl: old.hlsUrl,  // ✅ HLS URL 보존
+              poseLabel: old.poseLabel,  // ✅ Pose 정보 보존
+              poseConfidence: old.poseConfidence  // ✅ Confidence 보존
+            } : n;
           });
           return sortAndRank(merged);
         });
@@ -161,7 +169,18 @@ export default function App() {
           (msg: IMessage) => {
             const data = JSON.parse(msg.body);
             setSurvivors((prev) =>
-              prev.map((x) => (x.id === data.id ? { ...x, ...data } : x))
+              prev.map((x) => {
+                if (x.id !== data.id) return x;
+
+                // ✅ lastDetection을 제외하고 나머지만 업데이트
+                const { lastDetection, ...restData } = data;
+                return {
+                  ...x,
+                  ...restData,
+                  // 기존 lastDetection 명시적으로 유지
+                  lastDetection: x.lastDetection
+                };
+              })
             );
           }
         );
@@ -199,38 +218,28 @@ export default function App() {
             )
           );
 
-          /** -------------------------------
-           *  ⭐ NEW: 라이브 스트리밍 처리 ⭐
-           * ------------------------------- */
-
-          if (typeof data.cctvId === "number") {
-            console.log("🎥 live stream start for CCTV", data.cctvId);
-
-            // 1) 스트리밍 시작 API 호출
-            const ok = await startLiveStream(data.cctvId, data.locationId ?? 1);
-            if (!ok) {
-              console.error("❌ startLiveStream 실패");
-              return;
-            }
-
-            // 2) 스트림 URL 가져오기
-            const url = await getLiveStreamUrl(data.cctvId);
-            if (!url) {
-              console.error("❌ getLiveStreamUrl 실패");
-              return;
-            }
-
-            console.log("🎥 FINAL LIVE URL:", url);
-
-            // 3) 생존자 데이터에 hlsUrl 저장
-            setSurvivors((prev) =>
-              prev.map((x) =>
-                x.id === String(data.survivorId)
-                  ? { ...x, hlsUrl: url }
-                  : x
-              )
-            );
-          }
+          // 🔥 기존 코드 (주석처리) - 라이브 스트림 API 호출은 불필요 (동적 URL 생성 사용)
+          // if (typeof data.cctvId === "number") {
+          //   console.log("🎥 live stream start for CCTV", data.cctvId);
+          //   const ok = await startLiveStream(data.cctvId, data.locationId ?? 1);
+          //   if (!ok) {
+          //     console.error("❌ startLiveStream 실패");
+          //     return;
+          //   }
+          //   const url = await getLiveStreamUrl(data.cctvId);
+          //   if (!url) {
+          //     console.error("❌ getLiveStreamUrl 실패");
+          //     return;
+          //   }
+          //   console.log("🎥 FINAL LIVE URL:", url);
+          //   setSurvivors((prev) =>
+          //     prev.map((x) =>
+          //       x.id === String(data.survivorId)
+          //         ? { ...x, hlsUrl: url }
+          //         : x
+          //     )
+          //   );
+          // }
         });
 
         subsRef.current[`${id}-detection`] = sub;

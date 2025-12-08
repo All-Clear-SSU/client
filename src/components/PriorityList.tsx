@@ -59,17 +59,32 @@ export function PriorityList({ survivors, selectedId, onSelect }: PriorityListPr
         <div className="p-3 space-y-2">
           {survivors.map((survivor) => {
             const isSelected = selectedId === survivor.id;
-            const riskLevel =
-              survivor.riskScore >= 18 ? 'high' :
-              survivor.riskScore >= 12 ? 'medium' :
-              'low';
 
+
+            // ✅ 3.0점 이상이 빨강(위험), 1.0 이상이면 주황(경고) 테두리 (경고)
+             const riskLevel =
+                  survivor.riskScore >= 3.0
+                      ? 'high'
+                      : survivor.riskScore >= 1.0
+                          ? 'medium'
+                          : 'low';
+             /* 기존
+            const riskLevel =
+              survivor.riskScore >= 1.0 ? 'warning' : 'safe';
+              */
+
+              const riskColor =
+                  riskLevel === 'high'
+                      ? 'border-red-500 bg-red-950/30'
+                      : riskLevel === 'medium'
+                          ? 'border-orange-500 bg-orange-950/30'
+                          : 'border-green-500 bg-green-950/30';
+              /* 기존
             const riskColor =
-              riskLevel === 'high'
-                ? 'border-red-500 bg-red-950/30'
-                : riskLevel === 'medium'
+              riskLevel === 'medium'
                 ? 'border-orange-500 bg-orange-950/30'
                 : 'border-green-500 bg-green-950/30';
+            */
 
             return (
               <button
@@ -82,15 +97,16 @@ export function PriorityList({ survivors, selectedId, onSelect }: PriorityListPr
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <span className="text-white">{survivor.rank}.</span>
-                    <AlertTriangle
-                      className={`w-4 h-4 ${
-                        riskLevel === 'high'
-                          ? 'text-red-500'
-                          : riskLevel === 'medium'
-                          ? 'text-orange-500'
-                          : 'text-green-500'
-                      }`}
-                    />
+                      <AlertTriangle
+                          className={`w-4 h-4 ${
+                              riskLevel === 'high'
+                                  ? 'text-red-500'
+                                  : riskLevel === 'medium'
+                                      ? 'text-orange-500'
+                                      : 'text-green-500'
+                          }`}
+                      />
+
                     <span className="text-white">{survivor.riskScore.toFixed(1)}점</span>
                   </div>
                   <ChevronRight className="w-4 h-4 text-slate-400" />
@@ -98,7 +114,7 @@ export function PriorityList({ survivors, selectedId, onSelect }: PriorityListPr
 
                 <div className="space-y-1">
                   <div className="text-slate-300 text-sm">
-                    📍 {survivor.location} {survivor.floor}층 {survivor.room}
+                    📍 {survivor.room}
                   </div>
 
                   <div className="flex items-center gap-2">

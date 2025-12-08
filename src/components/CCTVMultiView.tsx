@@ -42,59 +42,100 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
 
-  /** 🔥 모든 카메라에 동일한 URL 강제 적용 */
-  const TEST_HLS_URL =
-    "http://16.184.55.244:8080/streams/cctv1/playlist.m3u8";
+  // 🔥 기존 코드 (주석처리) - 하드코딩된 CCTV1 URL
+  // const TEST_HLS_URL = "http://16.184.55.244:8080/streams/cctv1/playlist.m3u8";
+  // const effectiveUrl: string | undefined = TEST_HLS_URL;
 
-  const effectiveUrl: string | undefined = TEST_HLS_URL;
+  // ✅ 수정된 코드: CCTV ID에 따라 동적으로 HLS URL 생성
+  // useRef로 이전 cctvId를 기억하여 실제로 변경될 때만 URL 업데이트
+  const cctvId = survivor?.lastDetection?.cctvId;
+  const prevCctvIdRef = useRef<number | null | undefined>(null);
+  const urlRef = useRef<string | undefined>(undefined);
+
+  // cctvId가 실제로 변경되었을 때만 URL 재생성
+  if (prevCctvIdRef.current !== cctvId) {
+    console.log(`[MultiView ${survivor.id}] cctvId 변경: ${prevCctvIdRef.current} → ${cctvId}`);
+    prevCctvIdRef.current = cctvId;
+    urlRef.current = cctvId
+      ? `${import.meta.env.VITE_API_BASE || "http://16.184.55.244:8080"}/streams/cctv${cctvId}/playlist.m3u8`
+      : undefined;
+    console.log(`[MultiView ${survivor.id}] 새 URL 생성:`, urlRef.current);
+  }
+
+  const effectiveUrl: string | undefined = urlRef.current;
 
   /** HLS 연결 관리 */
+  const currentLoadedUrlRef = useRef<string | undefined>(undefined); // 현재 로드된 URL 추적
+
   useEffect(() => {
     const video = videoRef.current;
 
     if (!effectiveUrl || !video) {
+      // URL이 없으면 HLS 정리
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
+        currentLoadedUrlRef.current = undefined;
       }
       return;
     }
 
+    // ✅ 핵심: 이미 같은 URL이 로드되어 있으면 아무것도 하지 않음
+    if (currentLoadedUrlRef.current === effectiveUrl && hlsRef.current) {
+      return;
+    }
+
+    currentLoadedUrlRef.current = effectiveUrl;
+
     if (Hls.isSupported()) {
-      if (!hlsRef.current) {
+      // ✅ HLS 인스턴스 재사용: 이미 있으면 loadSource만 호출
+      if (hlsRef.current) {
+        // 기존 HLS 인스턴스가 있으면 URL만 변경
+        hlsRef.current.loadSource(effectiveUrl);
+      } else {
+        // 처음 생성할 때만 새 인스턴스 생성
         hlsRef.current = new Hls({
           enableWorker: true,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
+        });
+
+        const hls = hlsRef.current;
+        hls.loadSource(effectiveUrl);
+        hls.attachMedia(video);
+
+        hls.on(Hls.Events.ERROR, (_, data) => {
+          console.error(
+            "[HLS ERROR]",
+            data.type,
+            data.details,
+            data.response?.code,
+            effectiveUrl
+          );
         });
       }
-
-      const hls = hlsRef.current;
-
-      hls.loadSource(effectiveUrl);
-      hls.attachMedia(video);
-
-      hls.on(Hls.Events.ERROR, (_, data) => {
-        console.error(
-          "[HLS ERROR]",
-          data.type,
-          data.details,
-          data.response?.code,
-          effectiveUrl
-        );
-      });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = effectiveUrl;
     }
 
+    // ✅ cleanup 시 destroy하지 않음 - 컴포넌트 언마운트 시에만 정리
+    return () => {
+      // 아무것도 하지 않음 - HLS 인스턴스 유지
+    };
+  }, [effectiveUrl]);
+
+  // ✅ 컴포넌트 언마운트 시에만 HLS 정리
+  useEffect(() => {
     return () => {
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
     };
-  }, [effectiveUrl]);
+  }, []);
 
   const riskLevel =
-    survivor.riskScore >= 18 ? "high" : survivor.riskScore >= 12 ? "medium" : "low";
+    survivor.riskScore >= 3 ? "high" : survivor.riskScore >= 1 ? "medium" : "low";
 
   const riskColor =
     riskLevel === "high"
@@ -154,7 +195,7 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
         <div className="flex items-center gap-2 mt-1">
           <MapPin className="w-3 h-3 text-slate-400" />
           <span className="text-slate-300 text-sm">
-            {survivor.location} {survivor.floor}층 {survivor.room}
+            {survivor.room}
           </span>
         </div>
       </div>
@@ -225,7 +266,30 @@ export function CCTVMultiView({
   selectedId,
   onSelectSurvivor,
 }: CCTVMultiViewProps) {
-  const topSurvivors = survivors.slice(0, 6);
+  // ✅ 같은 CCTV ID별로 그룹화하고, 가장 위험도 높은 생존자만 선택
+  const uniqueCctvSurvivors = (() => {
+    const cctvMap = new Map<number, Survivor>();
+
+    for (const survivor of survivors) {
+      const cctvId = survivor.lastDetection?.cctvId;
+
+      // CCTV ID가 없는 생존자는 개별적으로 표시
+      if (!cctvId) continue;
+
+      const existing = cctvMap.get(cctvId);
+
+      // 해당 CCTV ID의 첫 생존자이거나, 더 높은 위험도를 가진 생존자인 경우 저장
+      if (!existing || survivor.riskScore > existing.riskScore) {
+        cctvMap.set(cctvId, survivor);
+      }
+    }
+
+    // Map의 값들을 배열로 변환하고 위험도 순으로 정렬
+    return Array.from(cctvMap.values()).sort((a, b) => b.riskScore - a.riskScore);
+  })();
+
+  const topSurvivors = uniqueCctvSurvivors.slice(0, 6);
+  const totalUniqueCctvs = uniqueCctvSurvivors.length;
 
   return (
     <div className="h-full bg-slate-900 flex flex-col">
@@ -235,7 +299,7 @@ export function CCTVMultiView({
           실시간 CCTV 멀티뷰
         </h2>
         <p className="text-slate-400 text-sm mt-1">
-          우선순위 상위 구역 자동 표시 · {topSurvivors.length}개 영상
+          우선순위 상위 구역 자동 표시 · {topSurvivors.length}개 영상 (전체 {totalUniqueCctvs}개 CCTV)
         </p>
       </div>
 
@@ -252,11 +316,11 @@ export function CCTVMultiView({
             ))}
           </div>
 
-          {survivors.length > 6 && (
+          {totalUniqueCctvs > 6 && (
             <div className="mt-4 bg-slate-800 border border-slate-700 rounded-lg p-3 text-center">
               <Activity className="w-5 h-5 text-slate-400 mx-auto mb-1" />
               <p className="text-slate-400 text-sm">
-                추가 {survivors.length - 6}명의 생존자가 감지되었습니다
+                추가 {totalUniqueCctvs - 6}개의 CCTV에서 생존자가 감지되었습니다
               </p>
             </div>
           )}
