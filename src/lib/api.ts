@@ -1,9 +1,18 @@
 // ===============================
 //  API BASE URL
 // ===============================
- export const API_BASE = import.meta.env.VITE_API_BASE || "/api";
- if (!API_BASE) {
-   console.warn("⚠️ VITE_API_BASE가 설정되지 않음. 기본값 /api 사용");
+
+// 🔥 기존 코드 (주석처리)
+// export const API_BASE = import.meta.env.VITE_API_BASE || "/api";
+// if (!API_BASE) {
+//   console.warn("⚠️ VITE_API_BASE가 설정되지 않음. 기본값 /api 사용");
+// }
+
+// ✅ 수정된 코드: 환경 변수로 백엔드 서버 URL 관리
+export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+
+if (!import.meta.env.VITE_API_BASE) {
+  console.warn("⚠️ VITE_API_BASE가 설정되지 않음. 기본값 http://localhost:8080 사용");
 }
 
 // ===============================
@@ -147,6 +156,7 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
   const survivorsWithScores = await Promise.all(
     arr.map(async (a, i) => {
       let riskScore = estimateRiskScore(); // 기본값 0
+      let lastDetection: Detection | null = null;
 
       try {
         const priorityData = await fetchLatestPriority(String(a.id));
@@ -154,6 +164,14 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
       } catch (err) {
         // 위험도 점수가 없는 경우 0으로 유지
         console.warn(`생존자 ${a.id}의 위험도 점수를 가져올 수 없습니다.`);
+      }
+
+      // ✅ 최신 Detection 정보 가져오기 (cctvId 포함)
+      try {
+        lastDetection = await fetchLatestDetection(String(a.id));
+      } catch (err) {
+        // Detection 정보가 없는 경우 null 유지
+        console.warn(`생존자 ${a.id}의 Detection 정보를 가져올 수 없습니다.`);
       }
 
       return {
@@ -172,11 +190,11 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
         x: 50 + ((i * 7) % 40),
         y: 50 + ((i * 11) % 40),
 
-        lastDetection: null,
-        videoUrl: null,
+        lastDetection, // ✅ 최신 Detection 정보 설정
+        videoUrl: lastDetection?.videoUrl ?? null,
         hlsUrl: null,
-        poseLabel: null,
-        poseConfidence: null,
+        poseLabel: lastDetection?.detectedStatus ?? null,
+        poseConfidence: lastDetection?.confidence ?? null,
 
         /** 🔥 백엔드에서 survivor.wifiSensorId 주면 자동으로 반영됨 */
         wifiSensorId: null,
@@ -245,6 +263,20 @@ export async function fetchLatestPriority(survivorId: string) {
   const res = await fetch(`${API_BASE}/survivors/${survivorId}/priority-score-latest`);
   if (!res.ok) throw new Error("최신 위험도 점수 가져오기 실패");
   return await res.json();
+}
+
+// ===============================
+//  최신 Detection 가져오기
+// ===============================
+
+export async function fetchLatestDetection(survivorId: string): Promise<Detection | null> {
+  try {
+    const res = await fetch(`${API_BASE}/detections/survivor/${survivorId}/latest`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 // ===============================
