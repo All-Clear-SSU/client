@@ -1,5 +1,5 @@
 // src/components/DetailPanel.tsx
-import { Camera, Send, XCircle, Activity, MapPin } from "lucide-react";
+import { Camera, Send, XCircle, Activity, MapPin, Wifi } from "lucide-react";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
 import { Separator } from "./ui/separator";
@@ -8,15 +8,18 @@ import Hls from "hls.js";
 
 import type { Survivor } from "../lib/api";
 import { fetchAiAnalysis, type AiAnalysis } from "../lib/api";
+import WifiGraph from "./WifiGraph";
 
 interface DetailPanelProps {
   survivor: Survivor | null;
+  survivors: Survivor[]; // 전체 생존자 목록 (같은 센서의 다른 생존자 찾기용)
   onDispatchRescue: (id: string) => void;
   onReportFalsePositive: (id: string) => void;
 }
 
 export function DetailPanel({
   survivor,
+  survivors,
   onDispatchRescue,
   onReportFalsePositive,
 }: DetailPanelProps) {
@@ -156,6 +159,38 @@ export function DetailPanel({
   const isDispatched = survivor.rescueStatus === "dispatched";
   const isRescued = survivor.rescueStatus === "rescued";
   const finalRisk = survivor.riskScore;
+  const isWifiDetection = survivor.detectionMethod === 'wifi';
+
+  // ✅ WiFi 탐지 상태 판단 헬퍼 함수
+  const getWifiDetectionStatus = (): 'detected' | 'recent' | 'none' | null => {
+    if (!survivor.wifiSensorId) return null;
+
+    const now = new Date();
+    const TEN_MINUTES = 10 * 60 * 1000;
+
+    // 현재 탐지 중인 경우
+    if (survivor.currentSurvivorDetected === true) {
+      return 'detected'; // 생존자 탐지 중
+    }
+
+    // 최근 10분 내 탐지 기록이 있는 경우 (currentSurvivorDetected가 false이거나 null/undefined여도 체크)
+    if (survivor.lastSurvivorDetectedAt) {
+      const lastDetectedTime = survivor.lastSurvivorDetectedAt instanceof Date 
+        ? survivor.lastSurvivorDetectedAt.getTime()
+        : new Date(survivor.lastSurvivorDetectedAt).getTime();
+      
+      const timeDiff = now.getTime() - lastDetectedTime;
+      
+      if (timeDiff < TEN_MINUTES) {
+        return 'recent'; // 최근 10분 내 탐지
+      }
+    }
+
+    // 그 외의 경우 (미탐지 또는 초기 상태)
+    return 'none'; // 미탐지
+  };
+
+  const wifiStatus = getWifiDetectionStatus();
 
   const riskColor =
     finalRisk >= 3.0
@@ -179,26 +214,42 @@ export function DetailPanel({
 
       <ScrollArea className="flex-1 p-4 space-y-4 overflow-y-auto">
         {/* ----------------------------------------------------
-           📌 CCTV 스트리밍 (HLS.js 버전)
+           📌 CCTV 스트리밍 / WiFi 그래프
         ---------------------------------------------------- */}
         <section className="shrink-0">
           <label className="text-slate-300 flex items-center gap-2 mb-2">
-            <Camera className="w-4 h-4" />
-            실시간 CCTV
+            {isWifiDetection ? (
+              <>
+                <Wifi className="w-4 h-4" />
+                실시간 WiFi CSI 데이터
+              </>
+            ) : (
+              <>
+                <Camera className="w-4 h-4" />
+                실시간 CCTV
+              </>
+            )}
           </label>
 
-          <div className="bg-slate-800 border border-slate-700 rounded-lg w-full h-[220px] overflow-hidden relative">
-            {effectiveUrl ? (
-              <video
-                key={effectiveUrl}  // ✅ URL만으로 key 설정 (survivor.id 제거)
-                ref={videoRef}
-                className="absolute inset-0 w-full h-full object-cover rounded"
-                autoPlay
-                muted
-                playsInline
-                controls
-                controlsList="nofullscreen"
-              />
+          <div className="bg-slate-800 border border-slate-700 rounded-lg w-full overflow-hidden relative">
+            {isWifiDetection && survivor.wifiSensorId ? (
+              // ✅ 선택된 생존자의 센서 그래프만 표시
+              <div className="h-[220px] w-full">
+                <WifiGraph sensorId={survivor.wifiSensorId} />
+              </div>
+            ) : effectiveUrl ? (
+              <div className="w-full h-full">
+                <video
+                  key={effectiveUrl}
+                  ref={videoRef}
+                  className="absolute inset-0 w-full h-full object-cover rounded"
+                  autoPlay
+                  muted
+                  playsInline
+                  controls
+                  controlsList="nofullscreen"
+                />
+              </div>
             ) : (
               <div className="absolute inset-0 flex items-center justify-center text-slate-400">
                 <div className="text-center">
@@ -219,36 +270,84 @@ export function DetailPanel({
         <section className="shrink-0 bg-slate-800 rounded-lg p-3 text-sm space-y-2">
           <h3 className="text-slate-300 font-medium mb-2">📡 실시간 감지 정보</h3>
 
-          <div className="flex justify-between">
-            <span className="text-slate-400">자세</span>
-            <span className="text-white font-medium wrap-break-word">
-              {last?.detectedStatus ?? "-"}
-            </span>
-          </div>
+          {isWifiDetection ? (
+            <>
+              <div className="flex justify-between">
+                <span className="text-slate-400">탐지 상태</span>
+                {wifiStatus === 'detected' ? (
+                  <span className="text-red-400 font-semibold animate-pulse">
+                    생존자 탐지됨
+                  </span>
+                ) : wifiStatus === 'recent' ? (
+                  <span className="text-orange-400 font-semibold">
+                    최근 10분 내 생존자 탐지
+                  </span>
+                ) : (
+                  <span className="text-green-400">
+                    생존자 미탐지
+                  </span>
+                )}
+              </div>
 
-          <div className="flex justify-between">
-            <span className="text-slate-400">Confidence</span>
-            <span className="text-white font-medium">
-              {last?.confidence ? (last.confidence * 100).toFixed(1) + "%" : "-"}
-            </span>
-          </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">위치</span>
+                <span className="text-white font-medium wrap-break-word">
+                  {survivor.location} - {survivor.room}
+                </span>
+              </div>
 
-          <div className="flex justify-between">
-            <span className="text-slate-400">분석 시간</span>
-            <span className="text-slate-300">
-              {last?.detectedAt
-                ? new Date(last.detectedAt).toLocaleString()
-                : "-"}
-            </span>
-          </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">분석 시간</span>
+                <span className="text-slate-300">
+                  {last?.detectedAt
+                    ? new Date(last.detectedAt).toLocaleString()
+                    : "-"}
+                </span>
+              </div>
 
-          {last?.aiAnalysisResult && (
-            <div className="pt-2">
-              <span className="text-slate-400">AI 모델 결과</span>
-              <p className="text-slate-300 mt-1 wrap-break-word">
-                {last.aiAnalysisResult}
-              </p>
-            </div>
+              {last?.aiAnalysisResult && (
+                <div className="pt-2">
+                  <span className="text-slate-400">CSI 데이터</span>
+                  <p className="text-slate-300 mt-1 wrap-break-word">
+                    {last.aiAnalysisResult}
+                  </p>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="flex justify-between">
+                <span className="text-slate-400">자세</span>
+                <span className="text-white font-medium wrap-break-word">
+                  {last?.detectedStatus ?? "-"}
+                </span>
+              </div>
+
+              <div className="flex justify-between">
+                <span className="text-slate-400">Confidence</span>
+                <span className="text-white font-medium">
+                  {last?.confidence ? (last.confidence * 100).toFixed(1) + "%" : "-"}
+                </span>
+              </div>
+
+              <div className="flex justify-between">
+                <span className="text-slate-400">분석 시간</span>
+                <span className="text-slate-300">
+                  {last?.detectedAt
+                    ? new Date(last.detectedAt).toLocaleString()
+                    : "-"}
+                </span>
+              </div>
+
+              {last?.aiAnalysisResult && (
+                <div className="pt-2">
+                  <span className="text-slate-400">AI 모델 결과</span>
+                  <p className="text-slate-300 mt-1 wrap-break-word">
+                    {last.aiAnalysisResult}
+                  </p>
+                </div>
+              )}
+            </>
           )}
         </section>
 
@@ -266,35 +365,39 @@ export function DetailPanel({
               </p>
             </div>
 
-            <Separator className="bg-slate-700" />
+            {!isWifiDetection && (
+              <>
+                <Separator className="bg-slate-700" />
 
-            <div className="flex justify-between">
-              <span className="text-slate-400">상태 점수</span>
-              <span className="text-white">
-                {analysis?.statusScore?.toFixed(1) ?? "-"}
-              </span>
-            </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">상태 점수</span>
+                  <span className="text-white">
+                    {analysis?.statusScore?.toFixed(1) ?? "-"}
+                  </span>
+                </div>
 
-            <div className="flex justify-between">
-              <span className="text-slate-400">환경 점수</span>
-              <span className="text-white">
-                {analysis?.environmentScore?.toFixed(1) ?? "-"}
-              </span>
-            </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">환경 점수</span>
+                  <span className="text-white">
+                    {analysis?.environmentScore?.toFixed(1) ?? "-"}
+                  </span>
+                </div>
 
-            <div className="flex justify-between">
-              <span className="text-slate-400">신뢰도 계수</span>
-              <span className="text-white">
-                {analysis?.confidenceCoefficient?.toFixed(2) ?? "-"}
-              </span>
-            </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">신뢰도 계수</span>
+                  <span className="text-white">
+                    {analysis?.confidenceCoefficient?.toFixed(2) ?? "-"}
+                  </span>
+                </div>
 
-            <Separator className="bg-slate-700" />
+                <Separator className="bg-slate-700" />
 
-            <div className="flex justify-between font-medium">
-              <span className="text-slate-300">최종 위험도</span>
-              <span className={riskColor}>{finalRisk.toFixed(1)} 점</span>
-            </div>
+                <div className="flex justify-between font-medium">
+                  <span className="text-slate-300">최종 위험도</span>
+                  <span className={riskColor}>{finalRisk.toFixed(1)} 점</span>
+                </div>
+              </>
+            )}
           </div>
         </section>
       </ScrollArea>

@@ -45,6 +45,35 @@ const statusBadges = {
 };
 
 export function PriorityList({ survivors, selectedId, onSelect }: PriorityListProps) {
+  // ✅ WiFi 탐지 상태 판단 헬퍼 함수
+  const getWifiDetectionStatus = (survivor: Survivor): 'detected' | 'recent' | 'none' | null => {
+    if (!survivor.wifiSensorId) return null;
+
+    const now = new Date();
+    const TEN_MINUTES = 10 * 60 * 1000;
+
+    // 현재 탐지 중인 경우
+    if (survivor.currentSurvivorDetected === true) {
+      return 'detected'; // 생존자 탐지 중
+    }
+
+    // 최근 10분 내 탐지 기록이 있는 경우 (currentSurvivorDetected가 false이거나 null/undefined여도 체크)
+    if (survivor.lastSurvivorDetectedAt) {
+      const lastDetectedTime = survivor.lastSurvivorDetectedAt instanceof Date 
+        ? survivor.lastSurvivorDetectedAt.getTime()
+        : new Date(survivor.lastSurvivorDetectedAt).getTime();
+      
+      const timeDiff = now.getTime() - lastDetectedTime;
+      
+      if (timeDiff < TEN_MINUTES) {
+        return 'recent'; // 최근 10분 내 탐지
+      }
+    }
+
+    // 그 외의 경우 (미탐지 또는 초기 상태)
+    return 'none'; // 미탐지
+  };
+
   return (
     <div className="h-full bg-slate-900 border-r border-slate-700 flex flex-col">
       <div className="p-4 border-b border-slate-700">
@@ -59,32 +88,42 @@ export function PriorityList({ survivors, selectedId, onSelect }: PriorityListPr
         <div className="p-3 space-y-2">
           {survivors.map((survivor) => {
             const isSelected = selectedId === survivor.id;
+            const isWifiDetection = survivor.detectionMethod === 'wifi';
+            const wifiStatus = getWifiDetectionStatus(survivor);
 
+            // ✅ WiFi 센서 생존자는 탐지 상태에 따라 처리
+            let riskLevel: 'high' | 'medium' | 'low' = 'low';
+            let riskColor = '';
 
-            // ✅ 3.0점 이상이 빨강(위험), 1.0 이상이면 주황(경고) 테두리 (경고)
-             const riskLevel =
-                  survivor.riskScore >= 3.0
-                      ? 'high'
-                      : survivor.riskScore >= 1.0
-                          ? 'medium'
-                          : 'low';
-             /* 기존
-            const riskLevel =
-              survivor.riskScore >= 1.0 ? 'warning' : 'safe';
-              */
-
-              const riskColor =
-                  riskLevel === 'high'
-                      ? 'border-red-500 bg-red-950/30'
-                      : riskLevel === 'medium'
-                          ? 'border-orange-500 bg-orange-950/30'
-                          : 'border-green-500 bg-green-950/30';
-              /* 기존
-            const riskColor =
-              riskLevel === 'medium'
-                ? 'border-orange-500 bg-orange-950/30'
-                : 'border-green-500 bg-green-950/30';
-            */
+            if (isWifiDetection) {
+              if (wifiStatus === 'detected') {
+                // 생존자 탐지 중: 빨간색 + 애니메이션
+                riskLevel = 'high';
+                riskColor = 'border-red-500 bg-red-950/30 animate-pulse';
+              } else if (wifiStatus === 'recent') {
+                // 최근 10분 내 탐지: 주황색
+                riskLevel = 'medium';
+                riskColor = 'border-orange-500 bg-orange-950/30';
+              } else {
+                // 미탐지: 초록색
+                riskLevel = 'low';
+                riskColor = 'border-green-500 bg-green-950/30';
+              }
+            } else {
+              // CCTV는 위험도 점수 기준
+              riskLevel =
+                survivor.riskScore >= 3.0
+                  ? 'high'
+                  : survivor.riskScore >= 1.0
+                    ? 'medium'
+                    : 'low';
+              riskColor =
+                riskLevel === 'high'
+                  ? 'border-red-500 bg-red-950/30'
+                  : riskLevel === 'medium'
+                    ? 'border-orange-500 bg-orange-950/30'
+                    : 'border-green-500 bg-green-950/30';
+            }
 
             return (
               <button
@@ -92,22 +131,36 @@ export function PriorityList({ survivors, selectedId, onSelect }: PriorityListPr
                 onClick={() => onSelect(survivor.id)}
                 className={`w-full p-3 rounded-lg border-l-4 ${riskColor}
                   ${isSelected ? 'bg-slate-800 ring-2 ring-blue-500' : 'bg-slate-800/50 hover:bg-slate-800'}
-                  transition-all text-left`}
+                  transition-all text-left relative overflow-hidden`}
               >
-                <div className="flex items-start justify-between mb-2">
+                {/* WiFi 센서 생존자 특수 효과 (탐지 중일 때만) */}
+                {isWifiDetection && wifiStatus === 'detected' && (
+                  <div className="absolute inset-0 bg-gradient-to-r from-red-500/10 via-transparent to-red-500/10 animate-pulse pointer-events-none" />
+                )}
+
+                <div className="flex items-start justify-between mb-2 relative z-10">
                   <div className="flex items-center gap-2">
                     <span className="text-white">{survivor.rank}.</span>
-                      <AlertTriangle
-                          className={`w-4 h-4 ${
-                              riskLevel === 'high'
-                                  ? 'text-red-500'
-                                  : riskLevel === 'medium'
-                                      ? 'text-orange-500'
-                                      : 'text-green-500'
-                          }`}
-                      />
-
-                    <span className="text-white">{survivor.riskScore.toFixed(1)}점</span>
+                    <AlertTriangle
+                      className={`w-4 h-4 ${
+                        riskLevel === 'high'
+                          ? 'text-red-500'
+                          : riskLevel === 'medium'
+                            ? 'text-orange-500'
+                            : 'text-green-500'
+                      } ${isWifiDetection && wifiStatus === 'detected' ? 'animate-pulse' : ''}`}
+                    />
+                    {isWifiDetection ? (
+                      wifiStatus === 'detected' ? (
+                        <span className="text-red-400 font-semibold animate-pulse">생존자 탐지</span>
+                      ) : wifiStatus === 'recent' ? (
+                        <span className="text-orange-400 font-semibold">최근 10분 내 생존자 탐지</span>
+                      ) : (
+                        <span className="text-green-400">생존자 미탐지</span>
+                      )
+                    ) : (
+                      <span className="text-white">{survivor.riskScore.toFixed(1)}점</span>
+                    )}
                   </div>
                   <ChevronRight className="w-4 h-4 text-slate-400" />
                 </div>

@@ -1,82 +1,114 @@
 // src/components/WifiGraph.tsx
+// 🔥 기존 MQTT 방식 → WebSocket(STOMP) 방식으로 변경
+// ✅ 기존 CSI 처리 로직 유지: 34개 부반송파를 각각 다른 색상으로 그래프 표시
 import { useEffect, useRef, useState } from "react";
-import mqtt from "mqtt";
+import { getStompClient } from "../lib/socket";
+import type { IMessage } from "@stomp/stompjs";
 
-// MQTT 설정
-const MQTT_BROKER = "wss://wyjae.sytes.net:8084"; // ← WebSocket 포트 필요 (예시)
-const MQTT_TOPIC = "PROTO/ESP/1";
-
-// CSI 세부 설정
-const SUBCARRIERS_RAW = 43;
-const INDICES_TO_REMOVE = Array.from({ length: 9 }, (_, i) => i + 26);
+// CSI 세부 설정 (기존 WiFiGraph와 동일)
 const WINDOW_SIZE = 150; // 최근 N 패킷만 표시
 
 interface WifiGraphProps {
-  sensorId?: string; // survivor에 연결된 wifi sensor id
+  sensorId?: string; // WiFi sensor ID
+}
+
+interface WifiSignalData {
+  sensor_id: number;
+  csi_amplitude_summary?: number[]; // 백엔드에서 계산된 진폭값 (각 부반송파)
+  survivor_detected?: boolean;
+  survivor_number?: string;
+  confidence?: number;
 }
 
 export default function WifiGraph({ sensorId }: WifiGraphProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
   const [buffer, setBuffer] = useState<number[][]>([]); // 2D: [packet][subcarriers]
 
-  /** MQTT 연결 */
+  /** WebSocket 구독 (MQTT 대신 사용) */
   useEffect(() => {
-    console.log("🔌 MQTT Connecting:", MQTT_BROKER);
+    if (!sensorId) {
+      console.warn(`[WifiGraph] sensorId가 없습니다:`, sensorId);
+      return;
+    }
 
-    const client = mqtt.connect(MQTT_BROKER, {
-      reconnectPeriod: 2000,
-    });
+    console.log(`🔌 [WifiGraph] WebSocket 연결 시작 - Sensor ID: ${sensorId}`);
 
-    client.on("connect", () => {
-      console.log("📡 MQTT Connected!");
-      client.subscribe(MQTT_TOPIC);
-    });
+    const client = getStompClient();
+    let subscription: any = null;
 
-    client.on("message", (_, payload) => {
-      try {
-        const text = payload.toString();
-        const csiLine = text
-          .split("\n")
-          .find((line) => line.trim().startsWith("CSI values:"));
-
-        if (!csiLine) return;
-
-        const nums = csiLine
-          .replace("CSI values:", "")
-          .trim()
-          .split(" ")
-          .map((v) => parseFloat(v))
-          .filter((n) => !isNaN(n));
-
-        if (nums.length % 2 !== 0) return;
-
-        // complex -> amplitude
-        let amplitudesFull: number[] = [];
-        for (let i = 0; i < nums.length; i += 2) {
-          amplitudesFull.push(Math.sqrt(nums[i] ** 2 + nums[i + 1] ** 2));
-        }
-
-        const useAmps = amplitudesFull
-          .slice(0, SUBCARRIERS_RAW)
-          .filter((_, idx) => !INDICES_TO_REMOVE.includes(idx));
-
-        setBuffer((prev) => {
-          const next = [...prev, useAmps];
-          if (next.length > WINDOW_SIZE) next.shift();
-          return next;
-        });
-      } catch (err) {
-        console.error("❌ MQTT message parse error", err);
+    const subscribe = () => {
+      if (!client.connected) {
+        console.warn(`[WifiGraph] STOMP 클라이언트가 연결되지 않았습니다. Sensor ID: ${sensorId}`);
+        return;
       }
-    });
+
+      const topic = `/topic/wifi-sensor/${sensorId}/signal`;
+      console.log(`🔌 [WifiGraph] 구독 시작: ${topic}`);
+
+      subscription = client.subscribe(topic, (msg: IMessage) => {
+        try {
+          const data: WifiSignalData = JSON.parse(msg.body);
+          console.log(`📡 [WifiGraph] WiFi CSI data received from sensor ${sensorId}:`, {
+            sensor_id: data.sensor_id,
+            has_amplitude: !!data.csi_amplitude_summary,
+            amplitude_length: data.csi_amplitude_summary?.length
+          });
+
+          // ✅ 백엔드에서 이미 진폭으로 변환된 CSI 데이터 사용
+          const csiAmplitudes = data.csi_amplitude_summary;
+
+          if (csiAmplitudes && csiAmplitudes.length > 0) {
+            // 기존 로직: 슬라이딩 윈도우로 버퍼 관리
+            setBuffer((prev) => {
+              const next = [...prev, csiAmplitudes];
+              if (next.length > WINDOW_SIZE) next.shift();
+              console.log(`✅ [WifiGraph] 버퍼 업데이트 완료. 이전 크기: ${prev.length}, 새 크기: ${next.length}`);
+              return next;
+            });
+          } else {
+            console.warn(`⚠️ [WifiGraph] CSI 진폭 데이터가 없습니다. Sensor ID: ${sensorId}`);
+          }
+        } catch (err) {
+          console.error(`❌ [WifiGraph] WebSocket message parse error (Sensor ${sensorId}):`, err);
+        }
+      });
+
+      console.log(`✅ [WifiGraph] WebSocket subscribed to ${topic}`);
+    };
+
+    // 연결 대기
+    if (client.connected) {
+      subscribe();
+    } else {
+      console.log(`⏳ [WifiGraph] STOMP 연결 대기 중... Sensor ID: ${sensorId}`);
+      
+      // 기존 onConnect 콜백을 보존하면서 새로운 콜백 추가
+      const existingOnConnect = client.onConnect;
+      client.onConnect = () => {
+        console.log(`🟢 [WifiGraph] STOMP connected, subscribing... Sensor ID: ${sensorId}`);
+        // 기존 콜백 실행 (App.tsx의 resubscribeAll 등)
+        if (existingOnConnect) {
+          existingOnConnect();
+        }
+        // 구독 시작
+        subscribe();
+      };
+      
+      // 연결이 이미 되어있을 수도 있으므로 다시 확인
+      if (client.connected) {
+        subscribe();
+      }
+    }
 
     return () => {
-      client.end();
+      if (subscription) {
+        subscription.unsubscribe();
+        console.log(`🔌 [WifiGraph] Unsubscribed from /topic/wifi-sensor/${sensorId}/signal`);
+      }
     };
-  }, []);
+  }, [sensorId]);
 
-  /** Canvas 렌더링 */
+  /** Canvas 렌더링 (기존 WiFiGraph와 동일) */
   useEffect(() => {
     if (!canvasRef.current || buffer.length === 0) return;
 
@@ -89,7 +121,7 @@ export default function WifiGraph({ sensorId }: WifiGraphProps) {
 
     ctx.clearRect(0, 0, width, height);
 
-    // Normalize
+    // Normalize (기존 로직 그대로)
     const flat = buffer.flat();
     const min = Math.min(...flat);
     const max = Math.max(...flat);
@@ -101,6 +133,7 @@ export default function WifiGraph({ sensorId }: WifiGraphProps) {
 
     ctx.lineWidth = 1;
 
+    // ✅ 기존 로직: 각 부반송파를 다른 색상으로 표시
     for (let sc = 0; sc < subcarrierCount; sc++) {
       ctx.beginPath();
       ctx.strokeStyle = `hsl(${(sc * 20) % 360}, 70%, 60%)`;
@@ -128,8 +161,19 @@ export default function WifiGraph({ sensorId }: WifiGraphProps) {
       />
 
       <div className="absolute top-2 left-2 bg-slate-900/70 px-2 py-1 rounded text-xs text-white">
-        WiFi CSI Graph {sensorId ? `(${sensorId})` : ""}
+        WiFi CSI Graph {sensorId ? `(Sensor ${sensorId})` : ""}
       </div>
+
+      {/* 데이터 없음 표시 */}
+      {buffer.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm">
+          <div className="text-center">
+            <div className="animate-pulse">⏳</div>
+            <div className="mt-2">WiFi CSI 데이터 대기 중...</div>
+            <div className="text-xs mt-1">센서 ID: {sensorId || "Unknown"}</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

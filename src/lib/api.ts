@@ -45,12 +45,14 @@ export type ApiSurvivor = {
 export type Detection = {
   id: number;
   survivorId: number;
-  cctvId?: number | null; // ✅ CCTV ID 추가
+  detectionType?: "CCTV" | "WIFI"; // ✅ Detection 유형
+  cctvId?: number | null; // ✅ CCTV ID
+  wifiSensorId?: number | null; // ✅ WiFi Sensor ID 추가
   detectedAt: string;
   detectedStatus: string;
   aiAnalysisResult: string;
   aiModelVersion: string;
-  confidence: number;
+  confidence: number | null; // CCTV 전용 (WiFi는 null)
   imageUrl: string | null;
   videoUrl: string | null; // HLS 스트림 URL
   rawData?: string;
@@ -109,6 +111,12 @@ export type Survivor = {
 
   /** 🔥 WiFi 센서 ID (그래프 표시용) */
   wifiSensorId?: string | null;  // ★ 추가된 부분
+
+  /** 🔥 WiFi 센서 - 현재 생존자 탐지 여부 (실시간 WebSocket으로 업데이트) */
+  currentSurvivorDetected?: boolean | null;
+
+  /** 🔥 WiFi 센서 - 마지막 생존자 탐지 시간 */
+  lastSurvivorDetectedAt?: Date | null;
 };
 
 // ===============================
@@ -158,12 +166,15 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
       let riskScore = estimateRiskScore(); // 기본값 0
       let lastDetection: Detection | null = null;
 
-      try {
-        const priorityData = await fetchLatestPriority(String(a.id));
-        riskScore = priorityData.finalRiskScore ?? 0;
-      } catch (err) {
-        // 위험도 점수가 없는 경우 0으로 유지
-        console.warn(`생존자 ${a.id}의 위험도 점수를 가져올 수 없습니다.`);
+      // ✅ CCTV로 감지된 생존자만 위험도 점수 가져오기 (WiFi 센서 생존자는 점수 불필요)
+      if (a.detectionMethod === "CCTV") {
+        try {
+          const priorityData = await fetchLatestPriority(String(a.id));
+          riskScore = priorityData.finalRiskScore ?? 0;
+        } catch (err) {
+          // 위험도 점수가 없는 경우 0으로 유지
+          console.warn(`생존자 ${a.id}의 위험도 점수를 가져올 수 없습니다.`);
+        }
       }
 
       // ✅ 최신 Detection 정보 가져오기 (cctvId 포함)
@@ -196,8 +207,8 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
         poseLabel: lastDetection?.detectedStatus ?? null,
         poseConfidence: lastDetection?.confidence ?? null,
 
-        /** 🔥 백엔드에서 survivor.wifiSensorId 주면 자동으로 반영됨 */
-        wifiSensorId: null,
+        /** ✅ WiFi 센서 ID 설정 (WiFi Detection인 경우) */
+        wifiSensorId: lastDetection?.wifiSensorId ? String(lastDetection.wifiSensorId) : null,
       };
     })
   );

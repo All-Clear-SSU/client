@@ -47,22 +47,60 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
   // const effectiveUrl: string | undefined = TEST_HLS_URL;
 
   // ✅ 수정된 코드: CCTV ID에 따라 동적으로 HLS URL 생성
-  // useRef로 이전 cctvId를 기억하여 실제로 변경될 때만 URL 업데이트
+  // WiFi 센서 생존자는 WiFi 그래프를 우선 표시하므로 URL 생성하지 않음
+  const isWifiSurvivor = !!survivor.wifiSensorId;
   const cctvId = survivor?.lastDetection?.cctvId;
   const prevCctvIdRef = useRef<number | null | undefined>(null);
   const urlRef = useRef<string | undefined>(undefined);
 
-  // cctvId가 실제로 변경되었을 때만 URL 재생성
-  if (prevCctvIdRef.current !== cctvId) {
-    console.log(`[MultiView ${survivor.id}] cctvId 변경: ${prevCctvIdRef.current} → ${cctvId}`);
-    prevCctvIdRef.current = cctvId;
-    urlRef.current = cctvId
-      ? `${import.meta.env.VITE_API_BASE || "http://16.184.55.244:8080"}/streams/cctv${cctvId}/playlist.m3u8`
-      : undefined;
-    console.log(`[MultiView ${survivor.id}] 새 URL 생성:`, urlRef.current);
+  // WiFi 센서가 아닌 경우에만 CCTV URL 생성
+  if (!isWifiSurvivor) {
+    // cctvId가 실제로 변경되었을 때만 URL 재생성
+    if (prevCctvIdRef.current !== cctvId) {
+      prevCctvIdRef.current = cctvId;
+      urlRef.current = cctvId
+        ? `${import.meta.env.VITE_API_BASE || "http://16.184.55.244:8080"}/streams/cctv${cctvId}/playlist.m3u8`
+        : undefined;
+    }
+  } else {
+    // WiFi 센서인 경우 URL을 생성하지 않음
+    urlRef.current = undefined;
+    prevCctvIdRef.current = null;
   }
 
-  const effectiveUrl: string | undefined = urlRef.current;
+  // ✅ WiFi 센서인 경우 effectiveUrl을 항상 undefined로 설정
+  const effectiveUrl: string | undefined = isWifiSurvivor ? undefined : urlRef.current;
+
+  // ✅ WiFi 탐지 상태 판단 헬퍼 함수
+  const getWifiDetectionStatus = (): 'detected' | 'recent' | 'none' | null => {
+    if (!survivor.wifiSensorId) return null;
+
+    const now = new Date();
+    const TEN_MINUTES = 10 * 60 * 1000;
+
+    // 현재 탐지 중인 경우
+    if (survivor.currentSurvivorDetected === true) {
+      return 'detected'; // 생존자 탐지 중
+    }
+
+    // 최근 10분 내 탐지 기록이 있는 경우 (currentSurvivorDetected가 false이거나 null/undefined여도 체크)
+    if (survivor.lastSurvivorDetectedAt) {
+      const lastDetectedTime = survivor.lastSurvivorDetectedAt instanceof Date 
+        ? survivor.lastSurvivorDetectedAt.getTime()
+        : new Date(survivor.lastSurvivorDetectedAt).getTime();
+      
+      const timeDiff = now.getTime() - lastDetectedTime;
+      
+      if (timeDiff < TEN_MINUTES) {
+        return 'recent'; // 최근 10분 내 탐지
+      }
+    }
+
+    // 그 외의 경우 (미탐지 또는 초기 상태)
+    return 'none'; // 미탐지
+  };
+
+  const wifiStatus = getWifiDetectionStatus();
 
   /** HLS 연결 관리 */
   const currentLoadedUrlRef = useRef<string | undefined>(undefined); // 현재 로드된 URL 추적
@@ -134,22 +172,44 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
     };
   }, []);
 
-  const riskLevel =
-    survivor.riskScore >= 3 ? "high" : survivor.riskScore >= 1 ? "medium" : "low";
+  const isWifiDetection = survivor.wifiSensorId != null;
 
-  const riskColor =
-    riskLevel === "high"
-      ? "border-red-500 bg-red-950/20"
-      : riskLevel === "medium"
-      ? "border-orange-500 bg-orange-950/20"
-      : "border-green-500 bg-green-950/20";
+  let riskLevel: "high" | "medium" | "low";
+  let riskColor: string;
+  let riskTextColor: string;
 
-  const riskTextColor =
-    riskLevel === "high"
-      ? "text-red-500"
-      : riskLevel === "medium"
-      ? "text-orange-500"
-      : "text-green-500";
+  if (isWifiDetection) {
+    // WiFi 센서는 탐지 상태에 따라 처리
+    if (wifiStatus === 'detected') {
+      riskLevel = "high";
+      riskColor = "border-red-500 bg-red-950/20 animate-pulse";
+      riskTextColor = "text-red-500";
+    } else if (wifiStatus === 'recent') {
+      riskLevel = "medium";
+      riskColor = "border-orange-500 bg-orange-950/20";
+      riskTextColor = "text-orange-500";
+    } else {
+      riskLevel = "low";
+      riskColor = "border-green-500 bg-green-950/20";
+      riskTextColor = "text-green-500";
+    }
+  } else {
+    // CCTV는 위험도 점수 기준
+    riskLevel =
+      survivor.riskScore >= 3 ? "high" : survivor.riskScore >= 1 ? "medium" : "low";
+    riskColor =
+      riskLevel === "high"
+        ? "border-red-500 bg-red-950/20"
+        : riskLevel === "medium"
+        ? "border-orange-500 bg-orange-950/20"
+        : "border-green-500 bg-green-950/20";
+    riskTextColor =
+      riskLevel === "high"
+        ? "text-red-500"
+        : riskLevel === "medium"
+        ? "text-orange-500"
+        : "text-green-500";
+  }
 
   return (
     <button
@@ -165,13 +225,30 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
         transition-all cursor-pointer text-left
       `}
     >
+      {/* WiFi 센서 생존자 특수 효과 (탐지 중일 때만) */}
+      {isWifiDetection && wifiStatus === 'detected' && (
+        <div className="absolute inset-0 bg-gradient-to-br from-red-500/10 via-transparent to-red-500/10 animate-pulse pointer-events-none" />
+      )}
+
       {/* 상단 정보 */}
-      <div className="bg-slate-950/80 p-2 border-b border-slate-700">
+      <div className="bg-slate-950/80 p-2 border-b border-slate-700 relative z-10">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-white">{survivor.rank}.</span>
-            <AlertTriangle className={`w-4 h-4 ${riskTextColor}`} />
-            <span className={riskTextColor}>{survivor.riskScore.toFixed(1)}</span>
+            <AlertTriangle
+              className={`w-4 h-4 ${riskTextColor} ${isWifiDetection && wifiStatus === 'detected' ? "animate-pulse" : ""}`}
+            />
+            {isWifiDetection ? (
+              wifiStatus === 'detected' ? (
+                <span className="text-red-400 font-semibold animate-pulse">생존자 탐지</span>
+              ) : wifiStatus === 'recent' ? (
+                <span className="text-orange-400 font-semibold">최근 10분 내 생존자 탐지</span>
+              ) : (
+                <span className="text-green-400">생존자 미탐지</span>
+              )
+            ) : (
+              <span className={riskTextColor}>{survivor.riskScore.toFixed(1)}</span>
+            )}
           </div>
 
           <Badge
@@ -266,30 +343,76 @@ export function CCTVMultiView({
   selectedId,
   onSelectSurvivor,
 }: CCTVMultiViewProps) {
+  // ✅ WiFi 센서 생존자의 우선순위 계산 (탐지 상태 기반)
+  function getWifiSurvivorPriority(survivor: Survivor): number {
+    if (!survivor.wifiSensorId) return 0;
+    
+    // 현재 탐지 중: 최고 우선순위 (3.0)
+    if (survivor.currentSurvivorDetected === true) {
+      return 3.0;
+    }
+    
+    // 최근 10분 내 탐지: 중간 우선순위 (1.5)
+    if (survivor.lastSurvivorDetectedAt) {
+      const now = new Date();
+      const lastDetectedTime = survivor.lastSurvivorDetectedAt instanceof Date 
+        ? survivor.lastSurvivorDetectedAt.getTime()
+        : new Date(survivor.lastSurvivorDetectedAt).getTime();
+      const TEN_MINUTES = 10 * 60 * 1000;
+      
+      if (now.getTime() - lastDetectedTime < TEN_MINUTES) {
+        return 1.5;
+      }
+    }
+    
+    // 미탐지: 낮은 우선순위 (0.5)
+    return 0.5;
+  }
+
   // ✅ 같은 CCTV ID별로 그룹화하고, 가장 위험도 높은 생존자만 선택
-  const uniqueCctvSurvivors = (() => {
+  // WiFi 센서 생존자는 WiFi 센서 ID별로 그룹화
+  const uniqueSurvivors = (() => {
     const cctvMap = new Map<number, Survivor>();
+    const wifiMap = new Map<string, Survivor>();
 
     for (const survivor of survivors) {
       const cctvId = survivor.lastDetection?.cctvId;
+      const wifiSensorId = survivor.wifiSensorId;
 
-      // CCTV ID가 없는 생존자는 개별적으로 표시
-      if (!cctvId) continue;
-
-      const existing = cctvMap.get(cctvId);
-
-      // 해당 CCTV ID의 첫 생존자이거나, 더 높은 위험도를 가진 생존자인 경우 저장
-      if (!existing || survivor.riskScore > existing.riskScore) {
-        cctvMap.set(cctvId, survivor);
+      // ✅ WiFi 센서 생존자: WiFi 센서 ID별로 그룹화 (CCTV와 관계없이)
+      if (wifiSensorId) {
+        const existing = wifiMap.get(wifiSensorId);
+        // 해당 WiFi 센서 ID의 첫 생존자이거나, 더 높은 우선순위를 가진 생존자인 경우 저장
+        // WiFi 센서는 탐지 상태를 우선순위로 사용
+        const currentPriority = getWifiSurvivorPriority(survivor);
+        const existingPriority = existing ? getWifiSurvivorPriority(existing) : -1;
+        
+        if (!existing || currentPriority > existingPriority) {
+          wifiMap.set(wifiSensorId, survivor);
+        }
+      }
+      // CCTV 생존자: CCTV ID별로 그룹화 (WiFi 센서가 아닌 경우만)
+      else if (cctvId) {
+        const existing = cctvMap.get(cctvId);
+        // 해당 CCTV ID의 첫 생존자이거나, 더 높은 위험도를 가진 생존자인 경우 저장
+        if (!existing || survivor.riskScore > existing.riskScore) {
+          cctvMap.set(cctvId, survivor);
+        }
       }
     }
 
-    // Map의 값들을 배열로 변환하고 위험도 순으로 정렬
-    return Array.from(cctvMap.values()).sort((a, b) => b.riskScore - a.riskScore);
+    // CCTV 생존자와 WiFi 생존자를 합쳐서 우선순위 순으로 정렬
+    const allSurvivors = [...Array.from(cctvMap.values()), ...Array.from(wifiMap.values())];
+    return allSurvivors.sort((a, b) => {
+      // WiFi 센서 생존자는 탐지 상태를 우선순위로 사용
+      const aPriority = a.wifiSensorId ? getWifiSurvivorPriority(a) : a.riskScore;
+      const bPriority = b.wifiSensorId ? getWifiSurvivorPriority(b) : b.riskScore;
+      return bPriority - aPriority;
+    });
   })();
 
-  const topSurvivors = uniqueCctvSurvivors.slice(0, 6);
-  const totalUniqueCctvs = uniqueCctvSurvivors.length;
+  const topSurvivors = uniqueSurvivors.slice(0, 6);
+  const totalUniqueSources = uniqueSurvivors.length;
 
   return (
     <div className="h-full bg-slate-900 flex flex-col">
@@ -299,7 +422,7 @@ export function CCTVMultiView({
           실시간 CCTV 멀티뷰
         </h2>
         <p className="text-slate-400 text-sm mt-1">
-          우선순위 상위 구역 자동 표시 · {topSurvivors.length}개 영상 (전체 {totalUniqueCctvs}개 CCTV)
+          우선순위 상위 구역 자동 표시 · {topSurvivors.length}개 영상 (전체 {totalUniqueSources}개 탐지원)
         </p>
       </div>
 
@@ -316,11 +439,11 @@ export function CCTVMultiView({
             ))}
           </div>
 
-          {totalUniqueCctvs > 6 && (
+          {totalUniqueSources > 6 && (
             <div className="mt-4 bg-slate-800 border border-slate-700 rounded-lg p-3 text-center">
               <Activity className="w-5 h-5 text-slate-400 mx-auto mb-1" />
               <p className="text-slate-400 text-sm">
-                추가 {totalUniqueCctvs - 6}개의 CCTV에서 생존자가 감지되었습니다
+                추가 {totalUniqueSources - 6}개 탐지원에서 생존자가 감지되었습니다
               </p>
             </div>
           )}
