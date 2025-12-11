@@ -2,10 +2,17 @@
 //  API BASE URL
 // ===============================
 
-export const API_BASE = import.meta.env.VITE_API_BASE || "/api";
+// 🔥 기존 코드 (주석처리)
+// export const API_BASE = import.meta.env.VITE_API_BASE || "/api";
+// if (!API_BASE) {
+//   console.warn("⚠️ VITE_API_BASE가 설정되지 않음. 기본값 /api 사용");
+// }
 
-if (!API_BASE) {
-  console.warn("⚠️ VITE_API_BASE가 설정되지 않음. 기본값 /api 사용");
+// ✅ 수정된 코드: 환경 변수로 백엔드 서버 URL 관리
+export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+
+if (!import.meta.env.VITE_API_BASE) {
+  console.warn("⚠️ VITE_API_BASE가 설정되지 않음. 기본값 http://localhost:8080 사용");
 }
 
 // ===============================
@@ -38,11 +45,14 @@ export type ApiSurvivor = {
 export type Detection = {
   id: number;
   survivorId: number;
+  detectionType?: "CCTV" | "WIFI"; // ✅ Detection 유형
+  cctvId?: number | null; // ✅ CCTV ID
+  wifiSensorId?: number | null; // ✅ WiFi Sensor ID 추가
   detectedAt: string;
   detectedStatus: string;
   aiAnalysisResult: string;
   aiModelVersion: string;
-  confidence: number;
+  confidence: number | null; // CCTV 전용 (WiFi는 null)
   imageUrl: string | null;
   videoUrl: string | null; // HLS 스트림 URL
   rawData?: string;
@@ -101,6 +111,24 @@ export type Survivor = {
 
   /** 🔥 WiFi 센서 ID (그래프 표시용) */
   wifiSensorId?: string | null;  // ★ 추가된 부분
+
+  /** 🔥 WiFi 센서 - 현재 생존자 탐지 여부 (실시간 WebSocket으로 업데이트) */
+  currentSurvivorDetected?: boolean | null;
+
+  /** 🔥 WiFi 센서 - 마지막 생존자 탐지 시간 */
+  lastSurvivorDetectedAt?: Date | null;
+
+  /** 🔥 WiFi 센서 - 실시간 데이터 (WebSocket으로 업데이트) */
+  wifiRealtimeData?: {
+    timestamp?: string;
+    csi_data?: string | any;
+    analysis_result?: string;
+    detected_status?: string;
+    survivor_detected?: boolean;
+  } | null;
+
+  /** 🔥 CCTV - 마지막 탐지 시간 (타임아웃 기반 자동 제거용) */
+  lastCctvDetectedAt?: Date | null;
 };
 
 // ===============================
@@ -128,8 +156,9 @@ const mapRescue = {
   CANCELED: "pending",
 } as const;
 
+// ✅ 초기 점수를 0으로 설정 (WebSocket으로 실제 점수 업데이트 대기)
 function estimateRiskScore(): number {
-  return 10;
+  return 0;
 }
 
 // ===============================
@@ -143,31 +172,60 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
 
   const arr: ApiSurvivor[] = await res.json();
 
-  return arr.map((a, i) => ({
-    id: String(a.id),
-    rank: 0,
-    riskScore: estimateRiskScore(),
+  // ✅ 각 생존자의 최신 위험도 점수를 병렬로 가져오기
+  const survivorsWithScores = await Promise.all(
+    arr.map(async (a, i) => {
+      let riskScore = estimateRiskScore(); // 기본값 0
+      let lastDetection: Detection | null = null;
 
-    location: a.location?.buildingName ?? "Unknown",
-    floor: a.location?.floor ?? 0,
-    room: a.location?.fullAddress ?? a.location?.roomNumber ?? "-",
+      // ✅ CCTV로 감지된 생존자만 위험도 점수 가져오기 (WiFi 센서 생존자는 점수 불필요)
+      if (a.detectionMethod === "CCTV") {
+        try {
+          const priorityData = await fetchLatestPriority(String(a.id));
+          riskScore = priorityData.finalRiskScore ?? 0;
+        } catch (err) {
+          // 위험도 점수가 없는 경우 0으로 유지
+          console.warn(`생존자 ${a.id}의 위험도 점수를 가져올 수 없습니다.`);
+        }
+      }
 
-    status: mapStatus[a.currentStatus],
-    detectionMethod: mapMethod[a.detectionMethod],
-    rescueStatus: mapRescue[a.rescueStatus],
+      // ✅ 최신 Detection 정보 가져오기 (cctvId 포함)
+      try {
+        lastDetection = await fetchLatestDetection(String(a.id));
+      } catch (err) {
+        // Detection 정보가 없는 경우 null 유지
+        console.warn(`생존자 ${a.id}의 Detection 정보를 가져올 수 없습니다.`);
+      }
 
-    x: 50 + ((i * 7) % 40),
-    y: 50 + ((i * 11) % 40),
+      return {
+        id: String(a.id),
+        rank: 0,
+        riskScore,
 
-    lastDetection: null,
-    videoUrl: null,
-    hlsUrl: null,
-    poseLabel: null,
-    poseConfidence: null,
+        location: a.location?.buildingName ?? "Unknown",
+        floor: a.location?.floor ?? 0,
+        room: a.location?.fullAddress ?? a.location?.roomNumber ?? "-",
 
-    /** 🔥 백엔드에서 survivor.wifiSensorId 주면 자동으로 반영됨 */
-    wifiSensorId: null,
-  }));
+        status: mapStatus[a.currentStatus],
+        detectionMethod: mapMethod[a.detectionMethod],
+        rescueStatus: mapRescue[a.rescueStatus],
+
+        x: 50 + ((i * 7) % 40),
+        y: 50 + ((i * 11) % 40),
+
+        lastDetection, // ✅ 최신 Detection 정보 설정
+        videoUrl: lastDetection?.videoUrl ?? null,
+        hlsUrl: null,
+        poseLabel: lastDetection?.detectedStatus ?? null,
+        poseConfidence: lastDetection?.confidence ?? null,
+
+        /** ✅ WiFi 센서 ID 설정 (WiFi Detection인 경우) */
+        wifiSensorId: lastDetection?.wifiSensorId ? String(lastDetection.wifiSensorId) : null,
+      };
+    })
+  );
+
+  return survivorsWithScores;
 }
 
 // ===============================
@@ -228,6 +286,20 @@ export async function fetchLatestPriority(survivorId: string) {
   const res = await fetch(`${API_BASE}/survivors/${survivorId}/priority-score-latest`);
   if (!res.ok) throw new Error("최신 위험도 점수 가져오기 실패");
   return await res.json();
+}
+
+// ===============================
+//  최신 Detection 가져오기
+// ===============================
+
+export async function fetchLatestDetection(survivorId: string): Promise<Detection | null> {
+  try {
+    const res = await fetch(`${API_BASE}/detections/survivor/${survivorId}/latest`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 // ===============================

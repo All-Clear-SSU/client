@@ -1,5 +1,5 @@
 // src/lib/liveStreamApi.ts
-const BASE_URL = "http://16.184.55.244:8080"; // 기존에 쓰던 거랑 맞춰서
+const BASE_URL = "http://16.184.55.244:8080"
 
 // 1) 라이브 스트리밍 시작
 export async function startLiveStream(
