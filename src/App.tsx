@@ -7,7 +7,7 @@ import { DetailPanel } from "./components/DetailPanel";
 import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 
-import type { Survivor } from "./lib/api";
+import type { Survivor, Detection } from "./lib/api";
 import { fetchSurvivors, updateRescueStatus, deleteSurvivor } from "./lib/api";
 
 import { getStompClient } from "./lib/socket";
@@ -27,21 +27,44 @@ export default function App() {
   const subsRef = useRef<Record<string, StompSubscription>>({});
   const connectedRef = useRef(false);
 
+  // ✅ 타임아웃 설정 (60초)
+  const CCTV_TIMEOUT_MS = 60 * 1000; // 60초
+  const WIFI_TIMEOUT_MS = 60 * 1000; // 60초
+
   /** ---------- helpers ---------- */
   const sortAndRank = (arr: Survivor[]) => {
     // WiFi 센서 생존자와 CCTV 생존자를 분리
     const wifiSurvivors = arr.filter(s => s.detectionMethod === 'wifi');
     const cctvSurvivors = arr.filter(s => s.detectionMethod !== 'wifi');
 
-    // 각각 위험도 순으로 정렬
-    const sortedWifi = wifiSurvivors.sort((a, b) => b.riskScore - a.riskScore);
+    // ✅ WiFi 센서별로 그룹화하여 하나만 선택
+    const wifiMap = new Map<string, Survivor>();
+    for (const survivor of wifiSurvivors) {
+      if (survivor.wifiSensorId) {
+        const existing = wifiMap.get(survivor.wifiSensorId);
+        // 첫 번째로 발견된 생존자만 저장
+        if (!existing) {
+          wifiMap.set(survivor.wifiSensorId, survivor);
+        }
+      }
+    }
+    const uniqueWifiSurvivors = Array.from(wifiMap.values());
+
+    // ✅ CCTV 생존자만 위험도 순으로 정렬
     const sortedCctv = cctvSurvivors.sort((a, b) => b.riskScore - a.riskScore);
 
     // WiFi 센서 생존자를 맨 위로, 그 다음 CCTV 생존자
-    const sorted = [...sortedWifi, ...sortedCctv];
+    const sorted = [...uniqueWifiSurvivors, ...sortedCctv];
 
-    // 순위 부여
-    return sorted.map((s, i) => ({ ...s, rank: i + 1 }));
+    // ✅ 순위 부여: WiFi 생존자는 rank 0으로 표시 (번호 없음 의미), CCTV는 1번부터
+    let cctvRank = 1;
+    return sorted.map((s) => {
+      if (s.detectionMethod === 'wifi') {
+        return { ...s, rank: 0 }; // WiFi는 rank 0
+      } else {
+        return { ...s, rank: cctvRank++ }; // CCTV는 1부터 증가
+      }
+    });
   };
 
   const parseScore = (raw: string): number | null => {
@@ -110,6 +133,8 @@ export default function App() {
               wifiSensorId: old.wifiSensorId,  // ✅ WiFi 센서 ID 보존
               currentSurvivorDetected: old.currentSurvivorDetected,  // ✅ WiFi 탐지 상태 보존
               lastSurvivorDetectedAt: old.lastSurvivorDetectedAt,  // ✅ WiFi 마지막 탐지 시간 보존
+              wifiRealtimeData: old.wifiRealtimeData,  // ✅ WiFi 실시간 데이터 보존
+              lastCctvDetectedAt: old.lastCctvDetectedAt,  // ✅ CCTV 마지막 탐지 시간 보존
             } : n;
           });
           return sortAndRank(merged);
@@ -135,6 +160,51 @@ export default function App() {
   useEffect(() => {
     resubscribeAll();
   }, [survivors.map((s) => s.id).join("|"), connectedRef.current]);
+
+  /** ---------- ✅ 타임아웃 기반 자동 제거 ---------- */
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const now = new Date();
+      const survivorsToRemove: string[] = [];
+
+      for (const survivor of survivors) {
+        // CCTV 생존자: 마지막 탐지 시간 체크
+        if (survivor.detectionMethod === 'cctv' && survivor.lastCctvDetectedAt) {
+          const timeSinceLastDetection = now.getTime() - survivor.lastCctvDetectedAt.getTime();
+          if (timeSinceLastDetection > CCTV_TIMEOUT_MS) {
+            console.log(`⏱️ CCTV 생존자 ${survivor.id} 타임아웃 (${Math.floor(timeSinceLastDetection / 1000)}초)`);
+            survivorsToRemove.push(survivor.id);
+          }
+        }
+
+        // WiFi 생존자: 마지막 생존자 탐지 시간 체크
+        if (survivor.detectionMethod === 'wifi' && survivor.lastSurvivorDetectedAt) {
+          // currentSurvivorDetected가 false이고, 마지막 탐지 시간이 오래된 경우
+          if (!survivor.currentSurvivorDetected) {
+            const timeSinceLastDetection = now.getTime() - survivor.lastSurvivorDetectedAt.getTime();
+            if (timeSinceLastDetection > WIFI_TIMEOUT_MS) {
+              console.log(`⏱️ WiFi 생존자 ${survivor.id} 타임아웃 (${Math.floor(timeSinceLastDetection / 1000)}초)`);
+              survivorsToRemove.push(survivor.id);
+            }
+          }
+        }
+      }
+
+      // 타임아웃된 생존자 제거
+      for (const id of survivorsToRemove) {
+        try {
+          await deleteSurvivor(id);
+          setSurvivors((prev) => prev.filter((s) => s.id !== id));
+          if (selectedId === id) setSelectedId(null);
+          toast.info(`생존자 #${id} 화면에서 벗어남 (자동 제거)`);
+        } catch (err) {
+          console.error(`생존자 ${id} 제거 실패:`, err);
+        }
+      }
+    }, 10000); // 10초마다 체크
+
+    return () => clearInterval(interval);
+  }, [survivors, selectedId, CCTV_TIMEOUT_MS, WIFI_TIMEOUT_MS]);
 
   /** ---------- WebSocket 구독 관리 ---------- */
   function resubscribeAll() {
@@ -206,8 +276,6 @@ export default function App() {
         const topic = `/topic/survivor/${id}/detections`;
 
         const sub = client.subscribe(topic, async (msg: IMessage) => {
-          console.log("🔥 [WS detection raw]", topic, msg.body);
-
           let data: any;
           try {
             data = JSON.parse(msg.body);
@@ -216,44 +284,24 @@ export default function App() {
             return;
           }
 
-          console.log("🔥 [WS detection parsed]", data);
-
           // 기본 정보 업데이트
           setSurvivors((prev) => {
-            console.log(`🔍 [Detection Update] survivorId=${data.survivorId}, wifiSensorId=${data.wifiSensorId}`);
-            console.log(`🔍 [Detection Update] 업데이트 전 생존자 목록:`, prev.map(x => ({
-              id: x.id,
-              wifiSensorId: x.wifiSensorId
-            })));
-
             const updated = prev.map((x) => {
-              const isMatch = x.id === String(data.survivorId);
-              console.log(`🔍 [Detection Update] 생존자 ${x.id}: 매칭=${isMatch}, 현재 wifiSensorId=${x.wifiSensorId}`);
+              if (x.id !== String(data.survivorId)) return x;
 
-              if (!isMatch) {
-                // 매칭 안되면 기존 객체 그대로 반환 (참조 유지)
-                console.log(`🔍 [Detection Update] 생존자 ${x.id}: 변경 없음, wifiSensorId 유지=${x.wifiSensorId}`);
-                return x;
-              }
+              // ✅ CCTV Detection인 경우 마지막 탐지 시간 업데이트
+              const isCctvDetection = data.detectionType === 'CCTV' || data.cctvId;
 
-              // 매칭되면 새 객체 생성
-              const updated = {
+              return {
                 ...x,
                 lastDetection: data,
                 poseLabel: data.detectedStatus ?? x.poseLabel,
                 poseConfidence: data.confidence ?? x.poseConfidence,
-                // ✅ WiFi 센서 ID 설정 (WiFi Detection인 경우만)
                 wifiSensorId: data.wifiSensorId ? String(data.wifiSensorId) : x.wifiSensorId,
+                // ✅ CCTV Detection 시 마지막 탐지 시간 기록
+                lastCctvDetectedAt: isCctvDetection ? new Date() : x.lastCctvDetectedAt,
               };
-
-              console.log(`🔍 [Detection Update] 생존자 ${x.id}: 업데이트됨, wifiSensorId=${x.wifiSensorId} → ${updated.wifiSensorId}`);
-              return updated;
             });
-
-            console.log(`🔍 [Detection Update] 업데이트 후 생존자 목록:`, updated.map(x => ({
-              id: x.id,
-              wifiSensorId: x.wifiSensorId
-            })));
 
             return updated;
           });
@@ -263,52 +311,40 @@ export default function App() {
             const wifiSensorId = String(data.wifiSensorId);
             const wifiTopic = `/topic/wifi-sensor/${wifiSensorId}/signal`;
 
-            console.log(`🔔 WiFi Detection 감지! WiFi 신호 구독 추가: ${wifiTopic}`);
-
             const wifiSub = client.subscribe(wifiTopic, (msg: IMessage) => {
               try {
-                const wifiData: {
-                  sensor_id: number;
-                  survivor_detected?: boolean;
-                  survivor_id?: number;
-                  timestamp?: string;
-                } = JSON.parse(msg.body);
-
-                console.log(`📡 [WiFi Signal] Sensor ${wifiData.sensor_id}:`, wifiData);
-
+                const wifiData = JSON.parse(msg.body);
                 const targetSensorId = String(wifiData.sensor_id);
 
-                console.log(`🔍 [Debug] targetSensorId: ${targetSensorId}, survivor_detected: ${wifiData.survivor_detected}`);
-
                 setSurvivors((prev) => {
-                  console.log(`🔍 [Debug] 현재 생존자 목록:`, prev.map(x => ({id: x.id, wifiSensorId: x.wifiSensorId})));
-
                   const updated = prev.map((x) => {
-                    const matches = x.wifiSensorId === targetSensorId;
-                    console.log(`🔍 [Debug] 생존자 ${x.id}: wifiSensorId=${x.wifiSensorId}, 매칭=${matches}`);
+                    if (x.wifiSensorId !== targetSensorId) return x;
 
-                    if (!matches) return x;
-
-                    // ✅ WiFi 신호 데이터 처리
                     const survivorDetected = wifiData.survivor_detected === true;
                     const now = new Date();
 
+                    // amplitude 배열을 CSI 데이터로 사용
+                    const csiDataStr = wifiData.amplitude
+                      ? (Array.isArray(wifiData.amplitude) ? wifiData.amplitude.join(',') : String(wifiData.amplitude))
+                      : wifiData.csi_data;
+
+                    const realtimeData = {
+                      timestamp: wifiData.timestamp || new Date().toISOString(),
+                      csi_data: csiDataStr || wifiData.csi_data,
+                      analysis_result: wifiData.analysis_result,
+                      detected_status: wifiData.detected_status,
+                      survivor_detected: survivorDetected,
+                    };
+
                     return {
                       ...x,
-                      // 현재 탐지 상태 업데이트
                       currentSurvivorDetected: survivorDetected,
-                      // 탐지된 경우에만 마지막 탐지 시간 업데이트
                       lastSurvivorDetectedAt: survivorDetected ? now : x.lastSurvivorDetectedAt,
+                      wifiRealtimeData: realtimeData,
                     };
                   });
 
-                  console.log(`🔍 [Debug] 업데이트 후:`, updated.map(x => ({
-                    id: x.id,
-                    wifiSensorId: x.wifiSensorId,
-                    currentSurvivorDetected: x.currentSurvivorDetected
-                  })));
-
-                  return updated;
+                  return sortAndRank(updated);
                 });
               } catch (err) {
                 console.error("❌ WiFi 신호 파싱 실패:", err);
@@ -316,7 +352,6 @@ export default function App() {
             });
 
             subsRef.current[`${data.survivorId}-wifi-signal`] = wifiSub;
-            console.log(`✅ WiFi 신호 구독 완료: ${wifiTopic}`);
           }
 
           // 🔥 기존 코드 (주석처리) - 라이브 스트림 API 호출은 불필요 (동적 URL 생성 사용)
@@ -351,53 +386,40 @@ export default function App() {
         const wifiSensorId = String(s.wifiSensorId);
         const wifiTopic = `/topic/wifi-sensor/${wifiSensorId}/signal`;
 
-        console.log(`🔔 [Resubscribe] WiFi 신호 구독 시작: ${wifiTopic} (생존자 ID: ${id})`);
-
         const wifiSub = client.subscribe(wifiTopic, (msg: IMessage) => {
           try {
-            const wifiData: {
-              sensor_id: number;
-              survivor_detected?: boolean;
-              survivor_id?: number;
-              timestamp?: string;
-            } = JSON.parse(msg.body);
-
-            console.log(`📡 [WiFi Signal] Sensor ${wifiData.sensor_id}:`, wifiData);
-
+            const wifiData = JSON.parse(msg.body);
             const targetSensorId = String(wifiData.sensor_id);
 
-            console.log(`🔍 [Debug] targetSensorId: ${targetSensorId}, survivor_detected: ${wifiData.survivor_detected}`);
-
             setSurvivors((prev) => {
-              console.log(`🔍 [Debug] 현재 생존자 목록:`, prev.map(x => ({id: x.id, wifiSensorId: x.wifiSensorId})));
-
               const updated = prev.map((x) => {
-                const matches = x.wifiSensorId === targetSensorId;
-                console.log(`🔍 [Debug] 생존자 ${x.id}: wifiSensorId=${x.wifiSensorId}, 매칭=${matches}`);
+                if (x.wifiSensorId !== targetSensorId) return x;
 
-                if (!matches) return x;
-
-                // ✅ WiFi 신호 데이터 처리
                 const survivorDetected = wifiData.survivor_detected === true;
                 const now = new Date();
 
+                // amplitude 배열을 CSI 데이터로 사용
+                const csiDataStr = wifiData.amplitude
+                  ? (Array.isArray(wifiData.amplitude) ? wifiData.amplitude.join(',') : String(wifiData.amplitude))
+                  : wifiData.csi_data;
+
+                const realtimeData = {
+                  timestamp: wifiData.timestamp || new Date().toISOString(),
+                  csi_data: csiDataStr || wifiData.csi_data,
+                  analysis_result: wifiData.analysis_result,
+                  detected_status: wifiData.detected_status,
+                  survivor_detected: survivorDetected,
+                };
+
                 return {
                   ...x,
-                  // 현재 탐지 상태 업데이트
                   currentSurvivorDetected: survivorDetected,
-                  // 탐지된 경우에만 마지막 탐지 시간 업데이트
                   lastSurvivorDetectedAt: survivorDetected ? now : x.lastSurvivorDetectedAt,
+                  wifiRealtimeData: realtimeData,
                 };
               });
 
-              console.log(`🔍 [Debug] 업데이트 후:`, updated.map(x => ({
-                id: x.id,
-                wifiSensorId: x.wifiSensorId,
-                currentSurvivorDetected: x.currentSurvivorDetected,
-                lastSurvivorDetectedAt: x.lastSurvivorDetectedAt
-              })));
-
-              return updated;
+              return sortAndRank(updated);
             });
           } catch (err) {
             console.error("❌ WiFi 신호 파싱 실패:", err);
@@ -405,7 +427,6 @@ export default function App() {
         });
 
         subsRef.current[`${id}-wifi-signal`] = wifiSub;
-        console.log(`✅ [Resubscribe] WiFi 신호 구독 완료: ${wifiTopic}`);
       }
     }
   }
@@ -430,9 +451,9 @@ export default function App() {
       await deleteSurvivor(id);
       setSurvivors((prev) => prev.filter((s) => s.id !== id));
       if (selectedId === id) setSelectedId(null);
-      toast.info("오탐 처리 완료");
+      toast.info("처리 완료");
     } catch {
-      toast.error("오탐 처리 실패");
+      toast.error("처리 실패");
     }
   };
 

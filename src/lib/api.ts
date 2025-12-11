@@ -117,6 +117,18 @@ export type Survivor = {
 
   /** 🔥 WiFi 센서 - 마지막 생존자 탐지 시간 */
   lastSurvivorDetectedAt?: Date | null;
+
+  /** 🔥 WiFi 센서 - 실시간 데이터 (WebSocket으로 업데이트) */
+  wifiRealtimeData?: {
+    timestamp?: string;
+    csi_data?: string | any;
+    analysis_result?: string;
+    detected_status?: string;
+    survivor_detected?: boolean;
+  } | null;
+
+  /** 🔥 CCTV - 마지막 탐지 시간 (타임아웃 기반 자동 제거용) */
+  lastCctvDetectedAt?: Date | null;
 };
 
 // ===============================

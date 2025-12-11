@@ -2,7 +2,7 @@
 import { useEffect, useRef } from "react";
 import Hls from "hls.js";
 
-import { Camera, AlertTriangle, MapPin, Activity } from "lucide-react";
+import { Camera, AlertTriangle, MapPin, Activity, Wifi } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { ScrollArea } from "./ui/scroll-area";
 import type { Survivor } from "../lib/api";
@@ -234,7 +234,12 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
       <div className="bg-slate-950/80 p-2 border-b border-slate-700 relative z-10">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="text-white">{survivor.rank}.</span>
+            {/* ✅ WiFi 생존자는 WiFi 아이콘, CCTV 생존자는 번호 표시 */}
+            {isWifiDetection ? (
+              <Wifi className={`w-4 h-4 ${riskTextColor} ${wifiStatus === 'detected' ? "animate-pulse" : ""}`} />
+            ) : (
+              <span className="text-white">{survivor.rank}.</span>
+            )}
             <AlertTriangle
               className={`w-4 h-4 ${riskTextColor} ${isWifiDetection && wifiStatus === 'detected' ? "animate-pulse" : ""}`}
             />
@@ -312,23 +317,29 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
         </div>
       </div>
 
-      {/* 하단 상태 */}
+      {/* 하단 상태 - WiFi 생존자는 상태 정보 표시 안 함 */}
       <div className="bg-slate-950/80 p-2 border-t border-slate-700">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className="text-xl">{statusIcons[survivor.status]}</span>
-            <span className="text-slate-300 text-sm">
-              {statusText[survivor.status]}
-            </span>
-          </div>
+        {!isWifiDetection ? (
+          // CCTV 생존자: 상태 정보 표시
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">{statusIcons[survivor.status]}</span>
+              <span className="text-slate-300 text-sm">
+                {statusText[survivor.status]}
+              </span>
+            </div>
 
-          <div className="flex flex-col items-end text-xs text-slate-400">
-            {survivor.poseLabel && <span>자세: {survivor.poseLabel}</span>}
-            {typeof survivor.poseConfidence === "number" && (
-              <span>Conf: {(survivor.poseConfidence * 100).toFixed(0)}%</span>
-            )}
+            <div className="flex flex-col items-end text-xs text-slate-400">
+              {survivor.poseLabel && <span>자세: {survivor.poseLabel}</span>}
+              {typeof survivor.poseConfidence === "number" && (
+                <span>Conf: {(survivor.poseConfidence * 100).toFixed(0)}%</span>
+              )}
+            </div>
           </div>
-        </div>
+        ) : (
+          // WiFi 생존자: 빈 공간 유지 (높이 맞추기)
+          <div className="h-[28px]"></div>
+        )}
       </div>
 
       {isSelected && (
@@ -343,32 +354,6 @@ export function CCTVMultiView({
   selectedId,
   onSelectSurvivor,
 }: CCTVMultiViewProps) {
-  // ✅ WiFi 센서 생존자의 우선순위 계산 (탐지 상태 기반)
-  function getWifiSurvivorPriority(survivor: Survivor): number {
-    if (!survivor.wifiSensorId) return 0;
-    
-    // 현재 탐지 중: 최고 우선순위 (3.0)
-    if (survivor.currentSurvivorDetected === true) {
-      return 3.0;
-    }
-    
-    // 최근 10분 내 탐지: 중간 우선순위 (1.5)
-    if (survivor.lastSurvivorDetectedAt) {
-      const now = new Date();
-      const lastDetectedTime = survivor.lastSurvivorDetectedAt instanceof Date 
-        ? survivor.lastSurvivorDetectedAt.getTime()
-        : new Date(survivor.lastSurvivorDetectedAt).getTime();
-      const TEN_MINUTES = 10 * 60 * 1000;
-      
-      if (now.getTime() - lastDetectedTime < TEN_MINUTES) {
-        return 1.5;
-      }
-    }
-    
-    // 미탐지: 낮은 우선순위 (0.5)
-    return 0.5;
-  }
-
   // ✅ 같은 CCTV ID별로 그룹화하고, 가장 위험도 높은 생존자만 선택
   // WiFi 센서 생존자는 WiFi 센서 ID별로 그룹화
   const uniqueSurvivors = (() => {
@@ -382,12 +367,8 @@ export function CCTVMultiView({
       // ✅ WiFi 센서 생존자: WiFi 센서 ID별로 그룹화 (CCTV와 관계없이)
       if (wifiSensorId) {
         const existing = wifiMap.get(wifiSensorId);
-        // 해당 WiFi 센서 ID의 첫 생존자이거나, 더 높은 우선순위를 가진 생존자인 경우 저장
-        // WiFi 센서는 탐지 상태를 우선순위로 사용
-        const currentPriority = getWifiSurvivorPriority(survivor);
-        const existingPriority = existing ? getWifiSurvivorPriority(existing) : -1;
-        
-        if (!existing || currentPriority > existingPriority) {
+        // ✅ WiFi 센서는 우선순위 적용 없이 첫 번째로 발견된 생존자만 저장
+        if (!existing) {
           wifiMap.set(wifiSensorId, survivor);
         }
       }
@@ -401,14 +382,11 @@ export function CCTVMultiView({
       }
     }
 
-    // CCTV 생존자와 WiFi 생존자를 합쳐서 우선순위 순으로 정렬
-    const allSurvivors = [...Array.from(cctvMap.values()), ...Array.from(wifiMap.values())];
-    return allSurvivors.sort((a, b) => {
-      // WiFi 센서 생존자는 탐지 상태를 우선순위로 사용
-      const aPriority = a.wifiSensorId ? getWifiSurvivorPriority(a) : a.riskScore;
-      const bPriority = b.wifiSensorId ? getWifiSurvivorPriority(b) : b.riskScore;
-      return bPriority - aPriority;
-    });
+    // ✅ WiFi 생존자를 먼저 배치하고, 그 다음 CCTV 생존자를 위험도 순으로 배치
+    const wifiSurvivors = Array.from(wifiMap.values());
+    const cctvSurvivors = Array.from(cctvMap.values()).sort((a, b) => b.riskScore - a.riskScore);
+
+    return [...wifiSurvivors, ...cctvSurvivors];
   })();
 
   const topSurvivors = uniqueSurvivors.slice(0, 6);

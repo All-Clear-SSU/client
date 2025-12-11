@@ -41,17 +41,27 @@ export function DetailPanel({
   const prevCctvIdRef = useRef<number | null | undefined>(null);
   const urlRef = useRef<string | null>(null);
 
+  // 🔍 디버깅: survivor 정보 확인
+  console.log('[DetailPanel] Survivor:', {
+    id: survivor?.id,
+    detectionMethod: survivor?.detectionMethod,
+    lastDetection: survivor?.lastDetection,
+    cctvId: cctvId
+  });
+
   // cctvId가 실제로 변경되었을 때만 URL 재생성
   if (prevCctvIdRef.current !== cctvId) {
-    console.log(`[DetailPanel] cctvId 변경: ${prevCctvIdRef.current} → ${cctvId}`);
     prevCctvIdRef.current = cctvId;
     urlRef.current = cctvId
       ? `${import.meta.env.VITE_API_BASE || "http://16.184.55.244:8080"}/streams/cctv${cctvId}/playlist.m3u8`
       : null;
-    console.log(`[DetailPanel] 새 URL 생성:`, urlRef.current);
+
+    // 🔍 디버깅 로그
+    console.log(`[DetailPanel] CCTV ID 변경: ${cctvId}, URL: ${urlRef.current}`);
   }
 
   const effectiveUrl = urlRef.current;
+  console.log('[DetailPanel] effectiveUrl:', effectiveUrl);
 
   // ----------------------------------------------------------
   // 🔥 survivor 변경 → AI 분석 정보 불러오기
@@ -69,9 +79,14 @@ export function DetailPanel({
   // ----------------------------------------------------------
   const currentLoadedUrlRef = useRef<string | null>(null); // 현재 로드된 URL 추적
 
-  useEffect(() => {
-    const video = videoRef.current;
+  // ✅ video element가 마운트된 후 HLS 초기화
+  const handleVideoRef = (video: HTMLVideoElement | null) => {
+    videoRef.current = video;
+
+    console.log('[DetailPanel handleVideoRef] video ref 설정됨', { video, effectiveUrl });
+
     if (!effectiveUrl || !video) {
+      console.log('[DetailPanel handleVideoRef] URL 또는 video 없음. 종료.', { effectiveUrl, video });
       // URL이 없으면 HLS 정리
       if (hlsRef.current) {
         hlsRef.current.destroy();
@@ -81,21 +96,24 @@ export function DetailPanel({
       return;
     }
 
-    // ✅ 핵심: 이미 같은 URL이 로드되어 있으면 아무것도 하지 않음
+    // 이미 같은 URL이 로드되어 있으면 아무것도 하지 않음
     if (currentLoadedUrlRef.current === effectiveUrl && hlsRef.current) {
-      console.log("[HLS] Same URL, skipping reload:", effectiveUrl);
+      console.log('[DetailPanel handleVideoRef] 이미 로드된 URL. 스킵.', effectiveUrl);
       return;
     }
 
-    console.log("[HLS] Loading new URL:", effectiveUrl);
     currentLoadedUrlRef.current = effectiveUrl;
+    console.log('[DetailPanel handleVideoRef] HLS 초기화 시작', effectiveUrl);
 
     if (Hls.isSupported()) {
+      console.log('[DetailPanel handleVideoRef] HLS.js 지원됨');
       // ✅ HLS 인스턴스 재사용: 이미 있으면 loadSource만 호출
       if (hlsRef.current) {
+        console.log('[DetailPanel handleVideoRef] 기존 HLS 인스턴스 재사용');
         // 기존 HLS 인스턴스가 있으면 URL만 변경
         hlsRef.current.loadSource(effectiveUrl);
       } else {
+        console.log('[DetailPanel handleVideoRef] 새 HLS 인스턴스 생성');
         // 처음 생성할 때만 새 인스턴스 생성
         hlsRef.current = new Hls({
           enableWorker: true,
@@ -110,6 +128,8 @@ export function DetailPanel({
         hls.loadSource(effectiveUrl);
         hls.attachMedia(video);
 
+        console.log('[DetailPanel handleVideoRef] HLS 초기화 완료');
+
         hls.on(Hls.Events.ERROR, (_, data) => {
           console.error(
             "[HLS ERROR - DetailPanel]",
@@ -121,14 +141,12 @@ export function DetailPanel({
         });
       }
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      console.log('[DetailPanel handleVideoRef] 네이티브 HLS 사용 (Safari)');
       video.src = effectiveUrl;
+    } else {
+      console.error('[DetailPanel handleVideoRef] HLS 지원되지 않음');
     }
-
-    // ✅ cleanup 시 destroy하지 않음 - 컴포넌트 언마운트 시에만 정리
-    return () => {
-      // 아무것도 하지 않음 - HLS 인스턴스 유지
-    };
-  }, [effectiveUrl]);
+  };
 
   // ✅ 컴포넌트 언마운트 시에만 HLS 정리
   useEffect(() => {
@@ -161,8 +179,8 @@ export function DetailPanel({
   const finalRisk = survivor.riskScore;
   const isWifiDetection = survivor.detectionMethod === 'wifi';
 
-  // ✅ WiFi 탐지 상태 판단 헬퍼 함수
-  const getWifiDetectionStatus = (): 'detected' | 'recent' | 'none' | null => {
+  // WiFi 탐지 상태 계산
+  const getWifiStatus = (): 'detected' | 'recent' | 'none' | null => {
     if (!survivor.wifiSensorId) return null;
 
     const now = new Date();
@@ -170,27 +188,26 @@ export function DetailPanel({
 
     // 현재 탐지 중인 경우
     if (survivor.currentSurvivorDetected === true) {
-      return 'detected'; // 생존자 탐지 중
+      return 'detected';
     }
 
-    // 최근 10분 내 탐지 기록이 있는 경우 (currentSurvivorDetected가 false이거나 null/undefined여도 체크)
+    // 최근 10분 내 탐지 기록이 있는 경우
     if (survivor.lastSurvivorDetectedAt) {
-      const lastDetectedTime = survivor.lastSurvivorDetectedAt instanceof Date 
+      const lastDetectedTime = survivor.lastSurvivorDetectedAt instanceof Date
         ? survivor.lastSurvivorDetectedAt.getTime()
         : new Date(survivor.lastSurvivorDetectedAt).getTime();
-      
+
       const timeDiff = now.getTime() - lastDetectedTime;
-      
+
       if (timeDiff < TEN_MINUTES) {
-        return 'recent'; // 최근 10분 내 탐지
+        return 'recent';
       }
     }
 
-    // 그 외의 경우 (미탐지 또는 초기 상태)
-    return 'none'; // 미탐지
+    return 'none';
   };
 
-  const wifiStatus = getWifiDetectionStatus();
+  const wifiStatus = getWifiStatus();
 
   const riskColor =
     finalRisk >= 3.0
@@ -231,25 +248,23 @@ export function DetailPanel({
             )}
           </label>
 
-          <div className="bg-slate-800 border border-slate-700 rounded-lg w-full overflow-hidden relative">
+          <div className="bg-slate-800 border border-slate-700 rounded-lg w-full overflow-hidden relative aspect-video">
             {isWifiDetection && survivor.wifiSensorId ? (
               // ✅ 선택된 생존자의 센서 그래프만 표시
-              <div className="h-[220px] w-full">
+              <div className="absolute inset-0 w-full h-full">
                 <WifiGraph sensorId={survivor.wifiSensorId} />
               </div>
             ) : effectiveUrl ? (
-              <div className="w-full h-full">
-                <video
-                  key={effectiveUrl}
-                  ref={videoRef}
-                  className="absolute inset-0 w-full h-full object-cover rounded"
-                  autoPlay
-                  muted
-                  playsInline
-                  controls
-                  controlsList="nofullscreen"
-                />
-              </div>
+              <video
+                key={effectiveUrl}
+                ref={handleVideoRef}
+                className="absolute inset-0 w-full h-full object-contain bg-black rounded"
+                autoPlay
+                muted
+                playsInline
+                controls
+                controlsList="nofullscreen"
+              />
             ) : (
               <div className="absolute inset-0 flex items-center justify-center text-slate-400">
                 <div className="text-center">
@@ -257,7 +272,11 @@ export function DetailPanel({
                   <p>
                     {survivor.location} - {survivor.room}
                   </p>
-                  <p className="text-xs opacity-50">Camera Feed Placeholder</p>
+                  <p className="text-xs opacity-50">
+                    {survivor.lastDetection?.cctvId
+                      ? `CCTV ${survivor.lastDetection.cctvId} - 스트림 로딩 중...`
+                      : "Camera Feed Placeholder"}
+                  </p>
                 </div>
               </div>
             )}
@@ -274,9 +293,10 @@ export function DetailPanel({
             <>
               <div className="flex justify-between">
                 <span className="text-slate-400">탐지 상태</span>
-                {wifiStatus === 'detected' ? (
+                {/* ✅ WiFi 실시간 데이터 우선 사용 */}
+                {survivor.wifiRealtimeData?.survivor_detected === true ? (
                   <span className="text-red-400 font-semibold animate-pulse">
-                    생존자 탐지됨
+                    생존자 탐지
                   </span>
                 ) : wifiStatus === 'recent' ? (
                   <span className="text-orange-400 font-semibold">
@@ -299,20 +319,35 @@ export function DetailPanel({
               <div className="flex justify-between">
                 <span className="text-slate-400">분석 시간</span>
                 <span className="text-slate-300">
-                  {last?.detectedAt
+                  {/* ✅ WiFi 실시간 데이터의 timestamp 우선 표시 */}
+                  {survivor.wifiRealtimeData?.timestamp
+                    ? new Date(survivor.wifiRealtimeData.timestamp).toLocaleString()
+                    : last?.detectedAt
                     ? new Date(last.detectedAt).toLocaleString()
+                    : survivor.lastSurvivorDetectedAt
+                    ? new Date(survivor.lastSurvivorDetectedAt).toLocaleString()
                     : "-"}
                 </span>
               </div>
 
-              {last?.aiAnalysisResult && (
-                <div className="pt-2">
-                  <span className="text-slate-400">CSI 데이터</span>
-                  <p className="text-slate-300 mt-1 wrap-break-word">
-                    {last.aiAnalysisResult}
-                  </p>
-                </div>
-              )}
+              {/* ✅ WiFi 실시간 CSI 데이터 표시 */}
+              <div className="pt-2">
+                <span className="text-slate-400">CSI 데이터</span>
+                <p
+                  className="text-slate-300 mt-1 text-xs font-mono max-h-20 overflow-auto bg-slate-900 p-2 rounded"
+                  style={{
+                    wordBreak: 'break-all',
+                    overflowWrap: 'break-word',
+                    whiteSpace: 'pre-wrap'
+                  }}
+                >
+                  {/* 실시간 데이터 우선, 없으면 lastDetection의 데이터 사용 */}
+                  {survivor.wifiRealtimeData?.analysis_result ||
+                   survivor.wifiRealtimeData?.csi_data ||
+                   last?.aiAnalysisResult ||
+                   "-"}
+                </p>
+              </div>
             </>
           ) : (
             <>
@@ -361,7 +396,18 @@ export function DetailPanel({
             <div>
               <div className="text-slate-400 text-sm mb-1">상황 해석</div>
               <p className="text-slate-300 break-all whitespace-pre-line">
-                {analysis?.aiAnalysisResult ?? "AI 분석 데이터를 불러오는 중..."}
+                {isWifiDetection ? (
+                  /* ✅ WiFi 실시간 데이터 우선 사용 */
+                  survivor.wifiRealtimeData?.survivor_detected === true ? (
+                    <span className="text-red-400 font-semibold">생존자 탐지</span>
+                  ) : wifiStatus === 'recent' ? (
+                    <span className="text-orange-400 font-semibold">최근 10분 내 생존자 탐지</span>
+                  ) : (
+                    <span className="text-green-400">생존자 미탐지</span>
+                  )
+                ) : (
+                  analysis?.aiAnalysisResult ?? "AI 분석 데이터를 불러오는 중..."
+                )}
               </p>
             </div>
 
@@ -426,7 +472,7 @@ export function DetailPanel({
           disabled={isRescued}
         >
           <XCircle className="w-4 h-4 mr-2" />
-          오탐(False Positive) 보고
+          오탐(False Positive) 보고 / 구조 완료
         </Button>
       </div>
     </div>

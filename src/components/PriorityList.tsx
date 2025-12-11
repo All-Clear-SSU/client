@@ -140,7 +140,18 @@ export function PriorityList({ survivors, selectedId, onSelect }: PriorityListPr
 
                 <div className="flex items-start justify-between mb-2 relative z-10">
                   <div className="flex items-center gap-2">
-                    <span className="text-white">{survivor.rank}.</span>
+                    {/* ✅ WiFi 생존자는 WiFi 아이콘, CCTV 생존자는 번호 표시 */}
+                    {isWifiDetection ? (
+                      <Wifi className={`w-5 h-5 ${
+                        riskLevel === 'high'
+                          ? 'text-red-500'
+                          : riskLevel === 'medium'
+                            ? 'text-orange-500'
+                            : 'text-green-500'
+                      } ${wifiStatus === 'detected' ? 'animate-pulse' : ''}`} />
+                    ) : (
+                      <span className="text-white">{survivor.rank}.</span>
+                    )}
                     <AlertTriangle
                       className={`w-4 h-4 ${
                         riskLevel === 'high'
