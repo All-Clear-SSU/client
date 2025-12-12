@@ -3,7 +3,7 @@ import { Camera, Send, XCircle, Activity, MapPin, Wifi } from "lucide-react";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
 import { Separator } from "./ui/separator";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import Hls from "hls.js";
 
 import type { Survivor } from "../lib/api";
@@ -80,7 +80,8 @@ export function DetailPanel({
   const currentLoadedUrlRef = useRef<string | null>(null); // 현재 로드된 URL 추적
 
   // ✅ video element가 마운트된 후 HLS 초기화
-  const handleVideoRef = (video: HTMLVideoElement | null) => {
+  // useCallback으로 감싸서 불필요한 재생성 방지
+  const handleVideoRef = useCallback((video: HTMLVideoElement | null) => {
     videoRef.current = video;
 
     console.log('[DetailPanel handleVideoRef] video ref 설정됨', { video, effectiveUrl });
@@ -146,7 +147,7 @@ export function DetailPanel({
     } else {
       console.error('[DetailPanel handleVideoRef] HLS 지원되지 않음');
     }
-  };
+  }, [effectiveUrl]); // effectiveUrl이 변경될 때만 함수 재생성
 
   // ✅ 컴포넌트 언마운트 시에만 HLS 정리
   useEffect(() => {
@@ -256,7 +257,6 @@ export function DetailPanel({
               </div>
             ) : effectiveUrl ? (
               <video
-                key={effectiveUrl}
                 ref={handleVideoRef}
                 className="absolute inset-0 w-full h-full object-contain bg-black rounded"
                 autoPlay
