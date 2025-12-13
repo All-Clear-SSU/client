@@ -3,7 +3,7 @@
 // ✅ 기존 CSI 처리 로직 유지: 34개 부반송파를 각각 다른 색상으로 그래프 표시
 import { useEffect, useRef, useState } from "react";
 import { getStompClient } from "../lib/socket";
-import type { IMessage } from "@stomp/stompjs";
+import type { IMessage, StompSubscription } from "@stomp/stompjs";
 
 // CSI 세부 설정 (기존 WiFiGraph와 동일)
 const WINDOW_SIZE = 150; // 최근 N 패킷만 표시
@@ -29,7 +29,7 @@ export default function WifiGraph({ sensorId }: WifiGraphProps) {
     if (!sensorId) return;
 
     const client = getStompClient();
-    let subscription: any = null;
+    let subscription: StompSubscription | null = null;
 
     const subscribe = () => {
       if (!client.connected) return;

@@ -13,12 +13,6 @@ import { fetchSurvivors, updateRescueStatus, deleteSurvivor, fetchWifiSensor, ty
 import { getStompClient } from "./lib/socket";
 import type { IMessage, StompSubscription } from "@stomp/stompjs";
 
-// 🔥 기존 코드 (주석처리) - 라이브 스트림 API는 동적 URL 생성으로 대체됨
-// import {
-//   startLiveStream,
-//   getLiveStreamUrl,
-// } from "./lib/liveStreamApi";
-
 export default function App() {
   const [survivors, setSurvivors] = useState<Survivor[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -77,7 +71,9 @@ export default function App() {
       if (typeof j === "number") return j;
       if (typeof j?.finalRiskScore === "number") return j.finalRiskScore;
       if (typeof j?.score === "number") return j.score;
-    } catch {}
+    } catch {
+      // noop: 파싱 실패 시 숫자 추출 로직으로 진행
+    }
 
     const m = raw.match(/-?\d+(\.\d+)?/);
     return m ? parseFloat(m[0]) : null;
@@ -110,6 +106,7 @@ export default function App() {
       connectedRef.current = false;
       client.deactivate();
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** ---------- WiFi 센서 1 정보 로드 ---------- */
@@ -221,6 +218,7 @@ export default function App() {
   /** ---------- ID 변경 시 재구독 ---------- */
   useEffect(() => {
     resubscribeAll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [survivors.map((s) => s.id).join("|"), connectedRef.current]);
 
   /** ---------- ✅ 타임아웃 기반 자동 제거 ---------- */
@@ -321,6 +319,7 @@ export default function App() {
                 if (x.id !== data.id) return x;
 
                 // ✅ lastDetection을 제외하고 나머지만 업데이트
+                // eslint-disable-next-line @typescript-eslint/no-unused-vars
                 const { lastDetection, ...restData } = data;
                 return {
                   ...x,
@@ -340,6 +339,7 @@ export default function App() {
         const topic = `/topic/survivor/${id}/detections`;
 
         const sub = client.subscribe(topic, async (msg: IMessage) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           let data: any;
           try {
             data = JSON.parse(msg.body);

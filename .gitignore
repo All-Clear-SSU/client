@@ -6,3 +6,9 @@ allclear-dist.zip
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+DOCKER_MOSQUITTO_GUIDE.md
+Layout.png
+WIFI_GRAPH_TEST_GUIDE.md
+current_layout.png
+test-mqtt-publisher.cjs
+test-wifi-mock.js

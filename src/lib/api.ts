@@ -121,7 +121,7 @@ export type Survivor = {
   /** 🔥 WiFi 센서 - 실시간 데이터 (WebSocket으로 업데이트) */
   wifiRealtimeData?: {
     timestamp?: string;
-    csi_data?: string | any;
+    csi_data?: string | number[] | null;
     analysis_result?: string;
     detected_status?: string;
     survivor_detected?: boolean;
@@ -185,7 +185,7 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
           riskScore = priorityData.finalRiskScore ?? 0;
         } catch (err) {
           // 위험도 점수가 없는 경우 0으로 유지
-          console.warn(`생존자 ${a.id}의 위험도 점수를 가져올 수 없습니다.`);
+          console.warn(`생존자 ${a.id}의 위험도 점수를 가져올 수 없습니다.`, err);
         }
       }
 
@@ -194,7 +194,7 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
         lastDetection = await fetchLatestDetection(String(a.id));
       } catch (err) {
         // Detection 정보가 없는 경우 null 유지
-        console.warn(`생존자 ${a.id}의 Detection 정보를 가져올 수 없습니다.`);
+        console.warn(`생존자 ${a.id}의 Detection 정보를 가져올 수 없습니다.`, err);
       }
 
       return {

@@ -42,6 +42,7 @@ type CctvTileProps = {
 function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 🔥 기존 코드 (주석처리) - 하드코딩된 CCTV1 URL
   // const TEST_HLS_URL = "http://16.184.55.244:8080/streams/cctv1/playlist.m3u8";
@@ -109,6 +110,13 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
   useEffect(() => {
     const video = videoRef.current;
 
+    const clearRetry = () => {
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
+    };
+
     if (!effectiveUrl || !video) {
       // URL이 없으면 HLS 정리
       if (hlsRef.current) {
@@ -116,6 +124,7 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
         hlsRef.current = null;
         currentLoadedUrlRef.current = undefined;
       }
+      clearRetry();
       return;
     }
 
@@ -126,46 +135,78 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
 
     currentLoadedUrlRef.current = effectiveUrl;
 
-    if (Hls.isSupported()) {
-      // ✅ HLS 인스턴스 재사용: 이미 있으면 loadSource만 호출
-      if (hlsRef.current) {
-        // 기존 HLS 인스턴스가 있으면 URL만 변경
+    const scheduleRetry = () => {
+      clearRetry();
+      retryTimeoutRef.current = setTimeout(() => {
+        if (hlsRef.current) {
+          hlsRef.current.destroy();
+          hlsRef.current = null;
+        }
+        currentLoadedUrlRef.current = undefined;
+        attachHls();
+      }, 1500);
+    };
+
+    function attachHls() {
+      const v = videoRef.current;
+      if (!v || !effectiveUrl) return;
+
+      if (Hls.isSupported()) {
+        if (!hlsRef.current) {
+          hlsRef.current = new Hls({
+            enableWorker: true,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+          });
+          const hls = hlsRef.current;
+          hls.attachMedia(v);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            v.play().catch(() => {});
+          });
+          hls.on(Hls.Events.ERROR, (_, data) => {
+            console.error(
+              "[HLS ERROR]",
+              data.type,
+              data.details,
+              data.response?.code,
+              effectiveUrl
+            );
+
+            if (!hlsRef.current || !data.fatal) return;
+
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+              hlsRef.current.startLoad();
+            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+              hlsRef.current.recoverMediaError();
+            } else {
+              scheduleRetry();
+            }
+          });
+        }
+
         hlsRef.current.loadSource(effectiveUrl);
-      } else {
-        // 처음 생성할 때만 새 인스턴스 생성
-        hlsRef.current = new Hls({
-          enableWorker: true,
-          maxBufferLength: 30,
-          maxMaxBufferLength: 60,
-        });
-
-        const hls = hlsRef.current;
-        hls.loadSource(effectiveUrl);
-        hls.attachMedia(video);
-
-        hls.on(Hls.Events.ERROR, (_, data) => {
-          console.error(
-            "[HLS ERROR]",
-            data.type,
-            data.details,
-            data.response?.code,
-            effectiveUrl
-          );
-        });
+      } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
+        v.src = effectiveUrl;
+        v.play().catch(() => {});
       }
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = effectiveUrl;
     }
+
+    attachHls();
 
     // ✅ cleanup 시 destroy하지 않음 - 컴포넌트 언마운트 시에만 정리
     return () => {
       // 아무것도 하지 않음 - HLS 인스턴스 유지
+      clearRetry();
     };
   }, [effectiveUrl]);
 
   // ✅ 컴포넌트 언마운트 시에만 HLS 정리
   useEffect(() => {
     return () => {
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
@@ -410,7 +451,7 @@ export function CCTVMultiView({
       const room = cctvInfo?.location?.fullAddress ||
                    (cctvInfo?.location ? `${cctvInfo.location.floor}층 ${cctvInfo.location.roomNumber}` : `CCTV ${cctvId} 구역`);
 
-      // 더미 생존자 생성
+      // 더미 생존자 생성 - 생존자 미탐지 상태여도 스트리밍 표시
       return {
         id: `cctv-${cctvId}-empty`,
         rank: 0,
@@ -423,7 +464,20 @@ export function CCTVMultiView({
         rescueStatus: "pending" as const,
         x: 0,
         y: 0,
-        lastDetection: { cctvId } as any, // cctvId만 포함
+        // ✅ lastDetection에 cctvId를 명확히 포함하여 스트리밍 URL 생성 가능하도록 수정
+        lastDetection: {
+          id: 0,
+          survivorId: 0,
+          cctvId,
+          detectionType: "CCTV" as const,
+          detectedAt: new Date().toISOString(),
+          detectedStatus: "미탐지",
+          confidence: 0,
+          aiAnalysisResult: "생존자 미탐지 - 실시간 모니터링 중",
+          aiModelVersion: "N/A",
+          imageUrl: null,
+          videoUrl: null,
+        },
       } as Survivor;
     });
   })();
