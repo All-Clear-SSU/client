@@ -181,12 +181,15 @@ export function PriorityList({ survivors, selectedId, onSelect }: PriorityListPr
                     📍 {survivor.room}
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <span>{statusIcons[survivor.status]}</span>
-                    <span className="text-slate-400 text-sm">
-                      {statusText[survivor.status]}
-                    </span>
-                  </div>
+                  {/* WiFi 생존자가 아닌 경우에만 자세 정보 표시 */}
+                  {!isWifiDetection && (
+                    <div className="flex items-center gap-2">
+                      <span>{statusIcons[survivor.status]}</span>
+                      <span className="text-slate-400 text-sm">
+                        {statusText[survivor.status]}
+                      </span>
+                    </div>
+                  )}
 
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1">

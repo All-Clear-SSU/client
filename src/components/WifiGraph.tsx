@@ -26,33 +26,19 @@ export default function WifiGraph({ sensorId }: WifiGraphProps) {
 
   /** WebSocket 구독 (MQTT 대신 사용) */
   useEffect(() => {
-    if (!sensorId) {
-      console.warn(`[WifiGraph] sensorId가 없습니다:`, sensorId);
-      return;
-    }
-
-    console.log(`🔌 [WifiGraph] WebSocket 연결 시작 - Sensor ID: ${sensorId}`);
+    if (!sensorId) return;
 
     const client = getStompClient();
     let subscription: any = null;
 
     const subscribe = () => {
-      if (!client.connected) {
-        console.warn(`[WifiGraph] STOMP 클라이언트가 연결되지 않았습니다. Sensor ID: ${sensorId}`);
-        return;
-      }
+      if (!client.connected) return;
 
       const topic = `/topic/wifi-sensor/${sensorId}/signal`;
-      console.log(`🔌 [WifiGraph] 구독 시작: ${topic}`);
 
       subscription = client.subscribe(topic, (msg: IMessage) => {
         try {
           const data: WifiSignalData = JSON.parse(msg.body);
-          console.log(`📡 [WifiGraph] WiFi CSI data received from sensor ${sensorId}:`, {
-            sensor_id: data.sensor_id,
-            has_amplitude: !!data.csi_amplitude_summary,
-            amplitude_length: data.csi_amplitude_summary?.length
-          });
 
           // ✅ 백엔드에서 이미 진폭으로 변환된 CSI 데이터 사용
           const csiAmplitudes = data.csi_amplitude_summary;
@@ -62,38 +48,30 @@ export default function WifiGraph({ sensorId }: WifiGraphProps) {
             setBuffer((prev) => {
               const next = [...prev, csiAmplitudes];
               if (next.length > WINDOW_SIZE) next.shift();
-              console.log(`✅ [WifiGraph] 버퍼 업데이트 완료. 이전 크기: ${prev.length}, 새 크기: ${next.length}`);
               return next;
             });
-          } else {
-            console.warn(`⚠️ [WifiGraph] CSI 진폭 데이터가 없습니다. Sensor ID: ${sensorId}`);
           }
         } catch (err) {
-          console.error(`❌ [WifiGraph] WebSocket message parse error (Sensor ${sensorId}):`, err);
+          console.error(`WiFi 신호 파싱 오류 (Sensor ${sensorId}):`, err);
         }
       });
-
-      console.log(`✅ [WifiGraph] WebSocket subscribed to ${topic}`);
     };
 
     // 연결 대기
     if (client.connected) {
       subscribe();
     } else {
-      console.log(`⏳ [WifiGraph] STOMP 연결 대기 중... Sensor ID: ${sensorId}`);
-      
       // 기존 onConnect 콜백을 보존하면서 새로운 콜백 추가
       const existingOnConnect = client.onConnect;
-      client.onConnect = () => {
-        console.log(`🟢 [WifiGraph] STOMP connected, subscribing... Sensor ID: ${sensorId}`);
+      client.onConnect = (frame) => {
         // 기존 콜백 실행 (App.tsx의 resubscribeAll 등)
         if (existingOnConnect) {
-          existingOnConnect();
+          existingOnConnect(frame);
         }
         // 구독 시작
         subscribe();
       };
-      
+
       // 연결이 이미 되어있을 수도 있으므로 다시 확인
       if (client.connected) {
         subscribe();
@@ -103,7 +81,6 @@ export default function WifiGraph({ sensorId }: WifiGraphProps) {
     return () => {
       if (subscription) {
         subscription.unsubscribe();
-        console.log(`🔌 [WifiGraph] Unsubscribed from /topic/wifi-sensor/${sensorId}/signal`);
       }
     };
   }, [sensorId]);

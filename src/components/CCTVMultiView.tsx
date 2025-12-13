@@ -1,11 +1,12 @@
 // src/components/CCTVMultiView.tsx
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 
 import { Camera, AlertTriangle, MapPin, Activity, Wifi } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { ScrollArea } from "./ui/scroll-area";
 import type { Survivor } from "../lib/api";
+import { fetchAllCctvs, type CctvInfo } from "../lib/api";
 import WifiGraph from "./WifiGraph";
 
 interface CCTVMultiViewProps {
@@ -234,12 +235,12 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
       <div className="bg-slate-950/80 p-2 border-b border-slate-700 relative z-10">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            {/* ✅ WiFi 생존자는 WiFi 아이콘, CCTV 생존자는 번호 표시 */}
+            {/* ✅ WiFi 생존자는 WiFi 아이콘, CCTV 생존자는 번호 표시 (rank가 0이면 표시 안 함) */}
             {isWifiDetection ? (
               <Wifi className={`w-4 h-4 ${riskTextColor} ${wifiStatus === 'detected' ? "animate-pulse" : ""}`} />
-            ) : (
+            ) : survivor.rank > 0 ? (
               <span className="text-white">{survivor.rank}.</span>
-            )}
+            ) : null}
             <AlertTriangle
               className={`w-4 h-4 ${riskTextColor} ${isWifiDetection && wifiStatus === 'detected' ? "animate-pulse" : ""}`}
             />
@@ -252,7 +253,9 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
                 <span className="text-green-400">생존자 미탐지</span>
               )
             ) : (
-              <span className={riskTextColor}>{survivor.riskScore.toFixed(1)}</span>
+              <span className={riskTextColor}>
+                {survivor.riskScore === 0 ? "0.0 (생존자 미탐지)" : survivor.riskScore.toFixed(1)}
+              </span>
             )}
           </div>
 
@@ -301,9 +304,11 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="text-center">
                 <Camera className="w-8 h-8 text-slate-600 mx-auto mb-1" />
-                <p className="text-slate-500 text-xs">Camera {survivor.rank}</p>
+                <p className="text-slate-500 text-xs">
+                  CCTV {cctvId || survivor.rank || "?"}
+                </p>
                 <p className="text-slate-500 text-xs mt-1">
-                  스트림 준비 중 (HLS URL 없음)
+                  {survivor.riskScore === 0 ? "생존자 미탐지" : "스트림 준비 중"}
                 </p>
               </div>
             </div>
@@ -317,10 +322,10 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
         </div>
       </div>
 
-      {/* 하단 상태 - WiFi 생존자는 상태 정보 표시 안 함 */}
+      {/* 하단 상태 - WiFi 생존자와 미탐지 CCTV는 상태 정보 표시 안 함 */}
       <div className="bg-slate-950/80 p-2 border-t border-slate-700">
-        {!isWifiDetection ? (
-          // CCTV 생존자: 상태 정보 표시
+        {!isWifiDetection && survivor.riskScore > 0 ? (
+          // CCTV 생존자 (탐지된 경우만): 상태 정보 표시
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className="text-xl">{statusIcons[survivor.status]}</span>
@@ -337,7 +342,7 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
             </div>
           </div>
         ) : (
-          // WiFi 생존자: 빈 공간 유지 (높이 맞추기)
+          // WiFi 생존자 또는 미탐지 CCTV: 빈 공간 유지 (높이 맞추기)
           <div className="h-[28px]"></div>
         )}
       </div>
@@ -354,43 +359,115 @@ export function CCTVMultiView({
   selectedId,
   onSelectSurvivor,
 }: CCTVMultiViewProps) {
-  // ✅ 같은 CCTV ID별로 그룹화하고, 가장 위험도 높은 생존자만 선택
-  // WiFi 센서 생존자는 WiFi 센서 ID별로 그룹화
-  const uniqueSurvivors = (() => {
-    const cctvMap = new Map<number, Survivor>();
+  // ✅ CCTV 위치 정보 로드
+  const [cctvInfoMap, setCctvInfoMap] = useState<Map<number, CctvInfo>>(new Map());
+
+  useEffect(() => {
+    async function loadCctvInfo() {
+      try {
+        const cctvs = await fetchAllCctvs();
+        const map = new Map<number, CctvInfo>();
+        for (const cctv of cctvs) {
+          map.set(cctv.id, cctv);
+        }
+        setCctvInfoMap(map);
+      } catch (err) {
+        console.error("CCTV 정보 로드 실패:", err);
+      }
+    }
+
+    loadCctvInfo();
+  }, []);
+
+  // ✅ CCTV 1-4는 고정으로 표시 + 생존자 탐지된 경우 해당 생존자 정보 표시
+  const fixedCctvs = (() => {
+    const fixedSlots: (Survivor | null)[] = [null, null, null, null]; // CCTV 1, 2, 3, 4
+
+    // 실제 생존자 중 CCTV 1-4에 해당하는 것 찾기
+    for (const survivor of survivors) {
+      const cctvId = survivor.lastDetection?.cctvId;
+      if (cctvId && cctvId >= 1 && cctvId <= 4) {
+        const index = cctvId - 1;
+        const existing = fixedSlots[index];
+        // 같은 CCTV의 생존자가 여러 명이면 위험도 높은 것 선택
+        if (!existing || survivor.riskScore > existing.riskScore) {
+          fixedSlots[index] = survivor;
+        }
+      }
+    }
+
+    // ✅ 생존자가 없는 CCTV 슬롯은 더미 생존자 생성 (우선순위 점수 0)
+    return fixedSlots.map((survivor, index) => {
+      const cctvId = index + 1;
+      if (survivor) {
+        return survivor;
+      }
+
+      // ✅ CCTV 위치 정보 가져오기
+      const cctvInfo = cctvInfoMap.get(cctvId);
+      const location = cctvInfo?.location?.buildingName || `CCTV ${cctvId}`;
+      const floor = cctvInfo?.location?.floor ?? 0;
+      const room = cctvInfo?.location?.fullAddress ||
+                   (cctvInfo?.location ? `${cctvInfo.location.floor}층 ${cctvInfo.location.roomNumber}` : `CCTV ${cctvId} 구역`);
+
+      // 더미 생존자 생성
+      return {
+        id: `cctv-${cctvId}-empty`,
+        rank: 0,
+        riskScore: 0, // ✅ 생존자 미탐지 상태는 점수 0
+        location,
+        floor,
+        room,
+        status: "conscious" as const,
+        detectionMethod: "cctv" as const,
+        rescueStatus: "pending" as const,
+        x: 0,
+        y: 0,
+        lastDetection: { cctvId } as any, // cctvId만 포함
+      } as Survivor;
+    });
+  })();
+
+  // ✅ WiFi 센서와 나머지 CCTV (5번 이상) 처리
+  const { wifiSurvivors, cctvSurvivors5Plus } = (() => {
     const wifiMap = new Map<string, Survivor>();
+    const cctvMap = new Map<number, Survivor>();
 
     for (const survivor of survivors) {
       const cctvId = survivor.lastDetection?.cctvId;
       const wifiSensorId = survivor.wifiSensorId;
 
-      // ✅ WiFi 센서 생존자: WiFi 센서 ID별로 그룹화 (CCTV와 관계없이)
+      // WiFi 센서 생존자
       if (wifiSensorId) {
         const existing = wifiMap.get(wifiSensorId);
-        // ✅ WiFi 센서는 우선순위 적용 없이 첫 번째로 발견된 생존자만 저장
         if (!existing) {
           wifiMap.set(wifiSensorId, survivor);
         }
       }
-      // CCTV 생존자: CCTV ID별로 그룹화 (WiFi 센서가 아닌 경우만)
-      else if (cctvId) {
+      // CCTV 5번 이상만 추가 표시
+      else if (cctvId && cctvId > 4) {
         const existing = cctvMap.get(cctvId);
-        // 해당 CCTV ID의 첫 생존자이거나, 더 높은 위험도를 가진 생존자인 경우 저장
         if (!existing || survivor.riskScore > existing.riskScore) {
           cctvMap.set(cctvId, survivor);
         }
       }
     }
 
-    // ✅ WiFi 생존자를 먼저 배치하고, 그 다음 CCTV 생존자를 위험도 순으로 배치
-    const wifiSurvivors = Array.from(wifiMap.values());
-    const cctvSurvivors = Array.from(cctvMap.values()).sort((a, b) => b.riskScore - a.riskScore);
-
-    return [...wifiSurvivors, ...cctvSurvivors];
+    return {
+      wifiSurvivors: Array.from(wifiMap.values()),
+      cctvSurvivors5Plus: Array.from(cctvMap.values()).sort((a, b) => b.riskScore - a.riskScore),
+    };
   })();
 
-  const topSurvivors = uniqueSurvivors.slice(0, 6);
-  const totalUniqueSources = uniqueSurvivors.length;
+  // ✅ WiFi 센서를 상단에 고정 + CCTV 1-4 + 나머지 CCTV (5번 이상)
+  // WiFi 센서 개수에 따라 CCTV 표시 개수 조정 (총 6개 유지)
+  const remainingSlots = 6 - wifiSurvivors.length;
+  const cctvToShow = remainingSlots >= 4
+    ? [...fixedCctvs, ...cctvSurvivors5Plus.slice(0, remainingSlots - 4)]
+    : fixedCctvs.slice(0, remainingSlots);
+
+  const topSurvivors = [...wifiSurvivors, ...cctvToShow];
+  const totalUniqueSources = wifiSurvivors.length + fixedCctvs.filter(s => s.riskScore > 0).length + cctvSurvivors5Plus.length;
 
   return (
     <div className="h-full bg-slate-900 flex flex-col">

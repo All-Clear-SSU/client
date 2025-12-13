@@ -8,6 +8,8 @@ import Hls from "hls.js";
 
 import type { Survivor } from "../lib/api";
 import { fetchAiAnalysis, type AiAnalysis } from "../lib/api";
+import { getStompClient } from "../lib/socket";
+import type { IMessage } from "@stomp/stompjs";
 import WifiGraph from "./WifiGraph";
 
 interface DetailPanelProps {
@@ -19,7 +21,7 @@ interface DetailPanelProps {
 
 export function DetailPanel({
   survivor,
-  survivors,
+  // survivors,
   onDispatchRescue,
   onReportFalsePositive,
 }: DetailPanelProps) {
@@ -31,23 +33,11 @@ export function DetailPanel({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
 
-  // 🔥 기존 코드 (주석처리) - 하드코딩된 CCTV1 URL
-  // const TEST_HLS_URL = "http://16.184.55.244:8080/streams/cctv1/playlist.m3u8";
-  // const effectiveUrl = TEST_HLS_URL;
-
   // ✅ 수정된 코드: CCTV ID에 따라 동적으로 HLS URL 생성
   // useRef로 이전 cctvId를 기억하여 실제로 변경될 때만 URL 업데이트
   const cctvId = survivor?.lastDetection?.cctvId;
   const prevCctvIdRef = useRef<number | null | undefined>(null);
   const urlRef = useRef<string | null>(null);
-
-  // 🔍 디버깅: survivor 정보 확인
-  console.log('[DetailPanel] Survivor:', {
-    id: survivor?.id,
-    detectionMethod: survivor?.detectionMethod,
-    lastDetection: survivor?.lastDetection,
-    cctvId: cctvId
-  });
 
   // cctvId가 실제로 변경되었을 때만 URL 재생성
   if (prevCctvIdRef.current !== cctvId) {
@@ -55,24 +45,99 @@ export function DetailPanel({
     urlRef.current = cctvId
       ? `${import.meta.env.VITE_API_BASE || "http://16.184.55.244:8080"}/streams/cctv${cctvId}/playlist.m3u8`
       : null;
-
-    // 🔍 디버깅 로그
-    console.log(`[DetailPanel] CCTV ID 변경: ${cctvId}, URL: ${urlRef.current}`);
   }
 
   const effectiveUrl = urlRef.current;
-  console.log('[DetailPanel] effectiveUrl:', effectiveUrl);
 
   // ----------------------------------------------------------
   // 🔥 survivor 변경 → AI 분석 정보 불러오기
   // ----------------------------------------------------------
   useEffect(() => {
-    if (!survivor) return;
+    if (!survivor) {
+      setAnalysis(null);
+      return;
+    }
 
+    // 초기 AI 분석 정보 로드
     fetchAiAnalysis(survivor.id)
       .then(setAnalysis)
       .catch(() => setAnalysis(null));
-  }, [survivor?.id, survivor?.riskScore]);
+  }, [survivor?.id]);
+
+  // ----------------------------------------------------------
+  // 🔥 WebSocket 실시간 우선순위 점수 업데이트
+  // ----------------------------------------------------------
+  useEffect(() => {
+    if (!survivor || survivor.detectionMethod === 'wifi') return;
+
+    const client = getStompClient();
+    let subscription: any = null;
+
+    const subscribe = () => {
+      if (!client.connected) return;
+
+      // ✅ 수정: /topic/survivor/{id}/scores 토픽 구독
+      const topic = `/topic/survivor/${survivor.id}/scores`;
+
+      subscription = client.subscribe(topic, async (msg: IMessage) => {
+        try {
+          // ✅ WebSocket 메시지에서 점수 정보 파싱
+          let priorityData: {
+            statusScore?: number;
+            environmentScore?: number;
+            confidenceCoefficient?: number;
+            finalRiskScore?: number;
+          } | undefined;
+          try {
+            priorityData = JSON.parse(msg.body);
+          } catch {
+            // 파싱 실패 시 API 응답만 사용
+          }
+
+          // ✅ fetchAiAnalysis 호출하여 모든 최신 분석 정보를 가져옴
+          const analysisData = await fetchAiAnalysis(survivor.id);
+
+          // ✅ WebSocket 메시지에서 받은 점수 정보가 있으면 우선 사용
+          const updatedAnalysis: AiAnalysis = {
+            ...analysisData,
+            // WebSocket 메시지의 점수 정보를 API 응답보다 우선 적용
+            statusScore: priorityData?.statusScore ?? analysisData.statusScore,
+            environmentScore: priorityData?.environmentScore ?? analysisData.environmentScore,
+            confidenceCoefficient: priorityData?.confidenceCoefficient ?? analysisData.confidenceCoefficient,
+            finalRiskScore: priorityData?.finalRiskScore ?? analysisData.finalRiskScore,
+          };
+
+          // 가져온 데이터로 analysis 상태를 직접 업데이트
+          setAnalysis(updatedAnalysis);
+        } catch (err) {
+          console.error(`AI 분석 정보 업데이트 실패:`, err);
+        }
+      });
+    };
+
+    // 연결 대기
+    if (client.connected) {
+      subscribe();
+    } else {
+      const existingOnConnect = client.onConnect;
+      client.onConnect = (frame) => {
+        if (existingOnConnect) {
+          existingOnConnect(frame);
+        }
+        subscribe();
+      };
+
+      if (client.connected) {
+        subscribe();
+      }
+    }
+
+    return () => {
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+    };
+  }, [survivor?.id, survivor?.detectionMethod]);
 
   // ----------------------------------------------------------
   // 🔥 DetailPanel 비디오에서도 HLS.js attach/destroy
@@ -84,10 +149,7 @@ export function DetailPanel({
   const handleVideoRef = useCallback((video: HTMLVideoElement | null) => {
     videoRef.current = video;
 
-    console.log('[DetailPanel handleVideoRef] video ref 설정됨', { video, effectiveUrl });
-
     if (!effectiveUrl || !video) {
-      console.log('[DetailPanel handleVideoRef] URL 또는 video 없음. 종료.', { effectiveUrl, video });
       // URL이 없으면 HLS 정리
       if (hlsRef.current) {
         hlsRef.current.destroy();
@@ -99,22 +161,17 @@ export function DetailPanel({
 
     // 이미 같은 URL이 로드되어 있으면 아무것도 하지 않음
     if (currentLoadedUrlRef.current === effectiveUrl && hlsRef.current) {
-      console.log('[DetailPanel handleVideoRef] 이미 로드된 URL. 스킵.', effectiveUrl);
       return;
     }
 
     currentLoadedUrlRef.current = effectiveUrl;
-    console.log('[DetailPanel handleVideoRef] HLS 초기화 시작', effectiveUrl);
 
     if (Hls.isSupported()) {
-      console.log('[DetailPanel handleVideoRef] HLS.js 지원됨');
       // ✅ HLS 인스턴스 재사용: 이미 있으면 loadSource만 호출
       if (hlsRef.current) {
-        console.log('[DetailPanel handleVideoRef] 기존 HLS 인스턴스 재사용');
         // 기존 HLS 인스턴스가 있으면 URL만 변경
         hlsRef.current.loadSource(effectiveUrl);
       } else {
-        console.log('[DetailPanel handleVideoRef] 새 HLS 인스턴스 생성');
         // 처음 생성할 때만 새 인스턴스 생성
         hlsRef.current = new Hls({
           enableWorker: true,
@@ -129,8 +186,6 @@ export function DetailPanel({
         hls.loadSource(effectiveUrl);
         hls.attachMedia(video);
 
-        console.log('[DetailPanel handleVideoRef] HLS 초기화 완료');
-
         hls.on(Hls.Events.ERROR, (_, data) => {
           console.error(
             "[HLS ERROR - DetailPanel]",
@@ -142,10 +197,7 @@ export function DetailPanel({
         });
       }
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      console.log('[DetailPanel handleVideoRef] 네이티브 HLS 사용 (Safari)');
       video.src = effectiveUrl;
-    } else {
-      console.error('[DetailPanel handleVideoRef] HLS 지원되지 않음');
     }
   }, [effectiveUrl]); // effectiveUrl이 변경될 때만 함수 재생성
 

@@ -221,6 +221,9 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
 
         /** ✅ WiFi 센서 ID 설정 (WiFi Detection인 경우) */
         wifiSensorId: lastDetection?.wifiSensorId ? String(lastDetection.wifiSensorId) : null,
+
+        /** ✅ CCTV 생존자의 경우 초기 탐지 시간 설정 (타임아웃 체크용) */
+        lastCctvDetectedAt: a.detectionMethod === "CCTV" ? new Date() : null,
       };
     })
   );
@@ -273,7 +276,16 @@ export type AiAnalysis = {
 };
 
 export async function fetchAiAnalysis(survivorId: string): Promise<AiAnalysis> {
-  const res = await fetch(`${API_BASE}/detections/survivor/${survivorId}/analysis`);
+  // ✅ 캐시 무효화를 위한 타임스탬프 추가
+  const timestamp = new Date().getTime();
+  const res = await fetch(`${API_BASE}/detections/survivor/${survivorId}/analysis?_t=${timestamp}`, {
+    cache: 'no-store', // 브라우저 캐시를 사용하지 않도록 설정
+    headers: {
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    }
+  });
   if (!res.ok) throw new Error("AI 분석 정보를 가져오지 못했습니다.");
   return await res.json();
 }
@@ -312,4 +324,71 @@ export async function fetchStreamUrl(
   const res = await fetch(`${API_BASE}/cctvs/streams/${cctvId}`);
   if (!res.ok) throw new Error("스트림 URL을 가져오지 못했습니다.");
   return await res.json();
+}
+
+// ===============================
+//  WiFi 센서 정보 가져오기
+// ===============================
+
+export type WifiSensor = {
+  id: number;
+  sensorCode: string;
+  location: {
+    id: number;
+    buildingName: string;
+    floor: number;
+    roomNumber: string;
+    fullAddress: string;
+  };
+  isActive: boolean;
+  lastActiveAt: string | null;
+};
+
+export async function fetchWifiSensor(sensorId: number): Promise<WifiSensor | null> {
+  try {
+    const res = await fetch(`${API_BASE}/wifi-sensors`);
+    if (!res.ok) return null;
+    const sensors: WifiSensor[] = await res.json();
+    return sensors.find(s => s.id === sensorId) || null;
+  } catch {
+    return null;
+  }
+}
+
+// ===============================
+//  CCTV 정보 가져오기
+// ===============================
+
+export type CctvInfo = {
+  id: number;
+  cctvCode: string;
+  location: {
+    id: number;
+    buildingName: string;
+    floor: number;
+    roomNumber: string;
+    fullAddress: string;
+  };
+  isActive: boolean;
+  lastActiveAt: string | null;
+};
+
+export async function fetchCctvInfo(cctvId: number): Promise<CctvInfo | null> {
+  try {
+    const res = await fetch(`${API_BASE}/cctvs/${cctvId}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchAllCctvs(): Promise<CctvInfo[]> {
+  try {
+    const res = await fetch(`${API_BASE}/cctvs`);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
 }

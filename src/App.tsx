@@ -7,8 +7,8 @@ import { DetailPanel } from "./components/DetailPanel";
 import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 
-import type { Survivor, Detection } from "./lib/api";
-import { fetchSurvivors, updateRescueStatus, deleteSurvivor } from "./lib/api";
+import type { Survivor } from "./lib/api";
+import { fetchSurvivors, updateRescueStatus, deleteSurvivor, fetchWifiSensor, type WifiSensor } from "./lib/api";
 
 import { getStompClient } from "./lib/socket";
 import type { IMessage, StompSubscription } from "@stomp/stompjs";
@@ -22,14 +22,15 @@ import type { IMessage, StompSubscription } from "@stomp/stompjs";
 export default function App() {
   const [survivors, setSurvivors] = useState<Survivor[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [wifiSensor1Info, setWifiSensor1Info] = useState<WifiSensor | null>(null);
 
   const clientRef = useRef(getStompClient());
   const subsRef = useRef<Record<string, StompSubscription>>({});
   const connectedRef = useRef(false);
 
-  // ✅ 타임아웃 설정 (60초)
-  const CCTV_TIMEOUT_MS = 60 * 1000; // 60초
-  const WIFI_TIMEOUT_MS = 60 * 1000; // 60초
+  // ✅ 타임아웃 설정
+  const CCTV_TIMEOUT_MS = 10 * 1000; // 10초 - CCTV 화면에서 사라진 생존자 빠른 제거 (오탐지 신속 처리 + 일시적 가림 허용)
+//  const WIFI_TIMEOUT_MS = 60 * 1000; // 60초(현재 사용하지 않아서 비활성화)
 
   /** ---------- helpers ---------- */
   const sortAndRank = (arr: Survivor[]) => {
@@ -111,6 +112,22 @@ export default function App() {
     };
   }, []);
 
+  /** ---------- WiFi 센서 1 정보 로드 ---------- */
+  useEffect(() => {
+    async function loadWifiSensor1() {
+      try {
+        const sensor = await fetchWifiSensor(1);
+        if (sensor) {
+          setWifiSensor1Info(sensor);
+        }
+      } catch (err) {
+        console.error("WiFi 센서 1 정보 로드 실패:", err);
+      }
+    }
+
+    loadWifiSensor1();
+  }, []);
+
   /** ---------- 생존자 목록 로드 ---------- */
   useEffect(() => {
     let alive = true;
@@ -137,6 +154,51 @@ export default function App() {
               lastCctvDetectedAt: old.lastCctvDetectedAt,  // ✅ CCTV 마지막 탐지 시간 보존
             } : n;
           });
+
+          // ✅ WiFi 센서 ID 1의 더미 생존자를 항상 추가 (실제 생존자가 없어도 표시)
+          const hasWifiSensor1 = merged.some(s => s.wifiSensorId === "1");
+          if (!hasWifiSensor1) {
+            // WiFi 센서 1의 기존 데이터 보존
+            const existingWifiSensor1 = prev.find(p => p.wifiSensorId === "1");
+
+            // ✅ WiFi 센서 1 정보를 API에서 가져온 경우 사용
+            const location = wifiSensor1Info?.location?.buildingName || "WiFi 센서";
+            const floor = wifiSensor1Info?.location?.floor ?? 0;
+            const room = wifiSensor1Info?.location?.fullAddress ||
+                         (wifiSensor1Info?.location ? `${wifiSensor1Info.location.floor}층 ${wifiSensor1Info.location.roomNumber}` : "센서 ID: 1");
+
+            // ✅ 기존 생존자가 있으면 업데이트, 없으면 새로 생성
+            const wifiSensor1Survivor: Survivor = existingWifiSensor1 ? {
+              ...existingWifiSensor1,
+              // ✅ 위치 정보 업데이트
+              location,
+              floor,
+              room,
+            } : {
+              id: "wifi-sensor-1",
+              rank: 0,
+              location,
+              floor,
+              room,
+              status: "conscious" as const,
+              riskScore: 0,
+              rescueStatus: "pending" as const,
+              detectionMethod: "wifi" as const,
+              wifiSensorId: "1",
+              currentSurvivorDetected: false,
+              lastSurvivorDetectedAt: null,
+              wifiRealtimeData: null,
+              lastDetection: null,
+              lastCctvDetectedAt: null,
+              poseLabel: null,
+              poseConfidence: null,
+              x: 50,
+              y: 50,
+            };
+
+            merged.push(wifiSensor1Survivor);
+          }
+
           return sortAndRank(merged);
         });
 
@@ -154,7 +216,7 @@ export default function App() {
       alive = false;
       clearInterval(t);
     };
-  }, [selectedId]);
+  }, [selectedId, wifiSensor1Info]); // ✅ wifiSensor1Info가 변경되면 다시 로드
 
   /** ---------- ID 변경 시 재구독 ---------- */
   useEffect(() => {
@@ -167,44 +229,46 @@ export default function App() {
       const now = new Date();
       const survivorsToRemove: string[] = [];
 
-      for (const survivor of survivors) {
-        // CCTV 생존자: 마지막 탐지 시간 체크
-        if (survivor.detectionMethod === 'cctv' && survivor.lastCctvDetectedAt) {
-          const timeSinceLastDetection = now.getTime() - survivor.lastCctvDetectedAt.getTime();
-          if (timeSinceLastDetection > CCTV_TIMEOUT_MS) {
-            console.log(`⏱️ CCTV 생존자 ${survivor.id} 타임아웃 (${Math.floor(timeSinceLastDetection / 1000)}초)`);
-            survivorsToRemove.push(survivor.id);
-          }
-        }
+      // ✅ 최신 survivors 상태를 가져오기 위해 setState의 함수형 업데이트 사용
+      setSurvivors((currentSurvivors) => {
+        for (const survivor of currentSurvivors) {
+          // CCTV 생존자: 마지막 탐지 시간 체크
+          if (survivor.detectionMethod === 'cctv' && survivor.lastCctvDetectedAt) {
+            // Date 객체로 변환 (문자열인 경우 대비)
+            const lastDetectedTime = survivor.lastCctvDetectedAt instanceof Date
+              ? survivor.lastCctvDetectedAt
+              : new Date(survivor.lastCctvDetectedAt);
 
-        // WiFi 생존자: 마지막 생존자 탐지 시간 체크
-        if (survivor.detectionMethod === 'wifi' && survivor.lastSurvivorDetectedAt) {
-          // currentSurvivorDetected가 false이고, 마지막 탐지 시간이 오래된 경우
-          if (!survivor.currentSurvivorDetected) {
-            const timeSinceLastDetection = now.getTime() - survivor.lastSurvivorDetectedAt.getTime();
-            if (timeSinceLastDetection > WIFI_TIMEOUT_MS) {
-              console.log(`⏱️ WiFi 생존자 ${survivor.id} 타임아웃 (${Math.floor(timeSinceLastDetection / 1000)}초)`);
+            const timeSinceLastDetection = now.getTime() - lastDetectedTime.getTime();
+
+            if (timeSinceLastDetection > CCTV_TIMEOUT_MS) {
               survivorsToRemove.push(survivor.id);
             }
           }
+
+          // ✅ WiFi 생존자: 타임아웃 제거 로직 비활성화 (false 신호를 받아도 계속 표시)
+          // WiFi 센서는 수동으로만 제거 가능 (오탐지 신고 버튼 사용)
         }
-      }
+
+        // 현재 상태를 변경 없이 반환 (제거는 아래에서 수행)
+        return currentSurvivors;
+      });
 
       // 타임아웃된 생존자 제거
       for (const id of survivorsToRemove) {
         try {
           await deleteSurvivor(id);
           setSurvivors((prev) => prev.filter((s) => s.id !== id));
-          if (selectedId === id) setSelectedId(null);
+          setSelectedId((current) => current === id ? null : current);
           toast.info(`생존자 #${id} 화면에서 벗어남 (자동 제거)`);
         } catch (err) {
-          console.error(`생존자 ${id} 제거 실패:`, err);
+          console.error(`❌ 생존자 ${id} 제거 실패:`, err);
         }
       }
     }, 10000); // 10초마다 체크
 
     return () => clearInterval(interval);
-  }, [survivors, selectedId, CCTV_TIMEOUT_MS, WIFI_TIMEOUT_MS]);
+  }, [CCTV_TIMEOUT_MS]); // ✅ survivors를 dependency에서 제거하여 interval 재설정 방지
 
   /** ---------- WebSocket 구독 관리 ---------- */
   function resubscribeAll() {
@@ -298,7 +362,8 @@ export default function App() {
                 poseLabel: data.detectedStatus ?? x.poseLabel,
                 poseConfidence: data.confidence ?? x.poseConfidence,
                 wifiSensorId: data.wifiSensorId ? String(data.wifiSensorId) : x.wifiSensorId,
-                // ✅ CCTV Detection 시 마지막 탐지 시간 기록
+                // ✅ CCTV Detection 메시지를 받으면 항상 마지막 탐지 시간을 현재 시간으로 업데이트
+                // WebSocket으로 Detection 메시지가 온 것 자체가 실시간 탐지를 의미
                 lastCctvDetectedAt: isCctvDetection ? new Date() : x.lastCctvDetectedAt,
               };
             });
@@ -323,14 +388,15 @@ export default function App() {
                     const survivorDetected = wifiData.survivor_detected === true;
                     const now = new Date();
 
-                    // amplitude 배열을 CSI 데이터로 사용
-                    const csiDataStr = wifiData.amplitude
-                      ? (Array.isArray(wifiData.amplitude) ? wifiData.amplitude.join(',') : String(wifiData.amplitude))
-                      : wifiData.csi_data;
+                    // csi_amplitude_summary 배열을 CSI 데이터로 사용
+                    const csiAmplitude = wifiData.csi_amplitude_summary || wifiData.amplitude;
+                    const csiDataStr = csiAmplitude
+                      ? (Array.isArray(csiAmplitude) ? csiAmplitude.join(', ') : String(csiAmplitude))
+                      : wifiData.csi_data || wifiData.analysis_result;
 
                     const realtimeData = {
                       timestamp: wifiData.timestamp || new Date().toISOString(),
-                      csi_data: csiDataStr || wifiData.csi_data,
+                      csi_data: csiDataStr,
                       analysis_result: wifiData.analysis_result,
                       detected_status: wifiData.detected_status,
                       survivor_detected: survivorDetected,
@@ -398,14 +464,15 @@ export default function App() {
                 const survivorDetected = wifiData.survivor_detected === true;
                 const now = new Date();
 
-                // amplitude 배열을 CSI 데이터로 사용
-                const csiDataStr = wifiData.amplitude
-                  ? (Array.isArray(wifiData.amplitude) ? wifiData.amplitude.join(',') : String(wifiData.amplitude))
-                  : wifiData.csi_data;
+                // csi_amplitude_summary 배열을 CSI 데이터로 사용
+                const csiAmplitude = wifiData.csi_amplitude_summary || wifiData.amplitude;
+                const csiDataStr = csiAmplitude
+                  ? (Array.isArray(csiAmplitude) ? csiAmplitude.join(', ') : String(csiAmplitude))
+                  : wifiData.csi_data || wifiData.analysis_result;
 
                 const realtimeData = {
                   timestamp: wifiData.timestamp || new Date().toISOString(),
-                  csi_data: csiDataStr || wifiData.csi_data,
+                  csi_data: csiDataStr,
                   analysis_result: wifiData.analysis_result,
                   detected_status: wifiData.detected_status,
                   survivor_detected: survivorDetected,
@@ -448,6 +515,12 @@ export default function App() {
 
   const handleReportFalsePositive = async (id: string) => {
     try {
+      // ✅ WiFi 센서 1의 더미 생존자는 제거할 수 없음
+      if (id === "wifi-sensor-1") {
+        toast.error("WiFi 센서 1은 제거할 수 없습니다");
+        return;
+      }
+
       await deleteSurvivor(id);
       setSurvivors((prev) => prev.filter((s) => s.id !== id));
       if (selectedId === id) setSelectedId(null);
