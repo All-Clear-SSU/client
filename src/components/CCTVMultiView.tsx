@@ -6,7 +6,7 @@ import { Camera, AlertTriangle, MapPin, Activity, Wifi } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { ScrollArea } from "./ui/scroll-area";
 import type { Survivor } from "../lib/api";
-import { fetchAllCctvs, type CctvInfo } from "../lib/api";
+import { API_BASE, fetchAllCctvs, type CctvInfo } from "../lib/api";
 import WifiGraph from "./WifiGraph";
 
 interface CCTVMultiViewProps {
@@ -16,9 +16,9 @@ interface CCTVMultiViewProps {
 }
 
 // 고정으로 보여줄 CCTV ID 목록
-const FIXED_CCTV_IDS = [1, 2, 3, 4];
 // const FIXED_CCTV_IDS = [1, 2, 3]; // CCTV 1~3만 고정
-// const FIXED_CCTV_IDS = [1, 2, 3, 4, 5]; // CCTV 1~5 고정
+// const FIXED_CCTV_IDS = [1, 2, 3, 4]; // CCTV 1~4만 고정
+const FIXED_CCTV_IDS = [1, 2, 3, 4, 5]; // CCTV 1~5 고정
 
 const statusIcons: Record<Survivor["status"], string> = {
   conscious: "👤",
@@ -71,9 +71,7 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
     // cctvId가 실제로 변경되었을 때만 URL 재생성
     if (prevCctvIdRef.current !== cctvId) {
       prevCctvIdRef.current = cctvId;
-      urlRef.current = cctvId
-        ? `${import.meta.env.VITE_API_BASE || "http://16.184.55.244:8080"}/streams/cctv${cctvId}/playlist.m3u8`
-        : undefined;
+      urlRef.current = cctvId ? `${API_BASE}/streams/cctv${cctvId}/playlist.m3u8` : undefined;
     }
   } else {
     // WiFi 센서인 경우 URL을 생성하지 않음

@@ -9,10 +9,16 @@
 // }
 
 // ✅ 수정된 코드: 환경 변수로 백엔드 서버 URL 관리
-export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+// - 로컬: http://localhost:8080 (vite dev 서버에서 직접 백엔드 호출)
+// - 배포(기본): /api → Netlify `_redirects`로 백엔드 프록시
+const hostname = typeof window !== "undefined" ? window.location.hostname : "";
+const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
+const defaultApiBase = isLocalHost ? "http://localhost:8080" : "/api";
+
+export const API_BASE = import.meta.env.VITE_API_BASE || defaultApiBase;
 
 if (!import.meta.env.VITE_API_BASE) {
-  console.warn("⚠️ VITE_API_BASE가 설정되지 않음. 기본값 http://localhost:8080 사용");
+  console.warn(`⚠️ VITE_API_BASE가 설정되지 않음. 기본값 ${defaultApiBase} 사용`);
 }
 
 // ===============================

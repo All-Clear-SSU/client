@@ -17,6 +17,8 @@ export default function App() {
   const [survivors, setSurvivors] = useState<Survivor[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [wifiSensor1Info, setWifiSensor1Info] = useState<WifiSensor | null>(null);
+  const [currentTime, setCurrentTime] = useState<string>("");
+  const [currentDate, setCurrentDate] = useState<string>("");
 
   const clientRef = useRef(getStompClient());
   const subsRef = useRef<Record<string, StompSubscription>>({});
@@ -541,11 +543,40 @@ export default function App() {
   const alertLevel =
     pendingCount >= 5 ? "high" : pendingCount >= 3 ? "medium" : "low";
 
+  /** ---------- KST 시계 ---------- */
+  useEffect(() => {
+    const formatterTime = new Intl.DateTimeFormat("ko-KR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      timeZone: "Asia/Seoul",
+    });
+
+    const formatterDate = new Intl.DateTimeFormat("ko-KR", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      timeZone: "Asia/Seoul",
+    });
+
+    const tick = () => {
+      const now = new Date();
+      setCurrentTime(formatterTime.format(now));
+      setCurrentDate(formatterDate.format(now));
+    };
+
+    tick(); // 초기 1회
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
+
   /** ---------- 렌더 ---------- */
   return (
     <div className="h-screen w-screen bg-slate-950 flex flex-col overflow-hidden">
       <Header
-        currentTime="15:29:14"
+        currentTime={currentTime}
+        currentDate={currentDate}
         alertLevel={alertLevel}
         totalSurvivors={survivors.length}
       />

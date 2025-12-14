@@ -7,7 +7,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import Hls from "hls.js";
 
 import type { Survivor } from "../lib/api";
-import { fetchAiAnalysis, type AiAnalysis } from "../lib/api";
+import { API_BASE, fetchAiAnalysis, type AiAnalysis } from "../lib/api";
 import { getStompClient } from "../lib/socket";
 import type { IMessage, StompSubscription } from "@stomp/stompjs";
 import WifiGraph from "./WifiGraph";
@@ -43,9 +43,7 @@ export function DetailPanel({
   // cctvId가 실제로 변경되었을 때만 URL 재생성
   if (prevCctvIdRef.current !== cctvId) {
     prevCctvIdRef.current = cctvId;
-    urlRef.current = cctvId
-      ? `${import.meta.env.VITE_API_BASE || "http://16.184.55.244:8080"}/streams/cctv${cctvId}/playlist.m3u8`
-      : null;
+    urlRef.current = cctvId ? `${API_BASE}/streams/cctv${cctvId}/playlist.m3u8` : null;
   }
 
   const effectiveUrl = urlRef.current;
