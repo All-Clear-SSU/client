@@ -36,7 +36,10 @@ export type ApiSurvivor = {
     | "INJURED"
     | "TRAPPED"
     | "LYING_DOWN"
-    | "STANDING";
+    | "STANDING"
+    | "FALLING"
+    | "CRAWLING"
+    | "SITTING";
   detectionMethod: "WIFI" | "CCTV";
   rescueStatus: "WAITING" | "IN_RESCUE" | "RESCUED" | "CANCELED";
 };
@@ -88,7 +91,10 @@ export type Survivor = {
     | "injured"
     | "trapped"
     | "lying"
-    | "standing";
+    | "standing"
+    | "falling"
+    | "crawling"
+    | "sitting";
 
   detectionMethod: "wifi" | "cctv";
   rescueStatus: "pending" | "dispatched" | "rescued";
@@ -135,14 +141,17 @@ export type Survivor = {
 //  매핑 테이블
 // ===============================
 
-const mapStatus = {
+const mapStatus: Record<ApiSurvivor["currentStatus"], Survivor["status"]> = {
   CONSCIOUS: "conscious",
   UNCONSCIOUS: "unconscious",
   INJURED: "injured",
   TRAPPED: "trapped",
   LYING_DOWN: "lying",
   STANDING: "standing",
-} as const;
+  FALLING: "falling",
+  CRAWLING: "crawling",
+  SITTING: "sitting",
+};
 
 const mapMethod = {
   CCTV: "cctv",
@@ -206,7 +215,7 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
         floor: a.location?.floor ?? 0,
         room: a.location?.fullAddress ?? a.location?.roomNumber ?? "-",
 
-        status: mapStatus[a.currentStatus],
+        status: mapStatus[a.currentStatus] ?? "standing",
         detectionMethod: mapMethod[a.detectionMethod],
         rescueStatus: mapRescue[a.rescueStatus],
 

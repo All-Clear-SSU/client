@@ -14,22 +14,28 @@ interface PriorityListProps {
 
 /** 🔥 상태 아이콘 (Survivor["status"] 전체 대응) */
 const statusIcons: Record<Survivor["status"], string> = {
+  conscious: '👤',
   unconscious: '🛌',
   injured: '🤕',
   trapped: '🚪',
-  conscious: '👤',
-  lying: '🛌',            // 추가됨
-  standing: '🚶‍♂️',        // 추가됨
+  lying: '🛌',
+  standing: '🚶',
+  falling: '🛌',
+  crawling: '🧎',
+  sitting: '🪑🧍',
 };
 
 /** 🔥 상태 텍스트 (Survivor["status"] 전체 대응) */
 const statusText: Record<Survivor["status"], string> = {
+  conscious: '의식 있음',
   unconscious: '쓰러져 있음',
   injured: '부상',
   trapped: '갇힘',
-  conscious: '의식 있음',
-  lying: '쓰러져 있음',      // 추가됨
-  standing: '서 있음',        // 추가됨
+  lying: '누워 있음',
+  standing: '서 있음',
+  falling: '쓰러져 있음',
+  crawling: '기어가고 있음',
+  sitting: '앉아 있음',
 };
 
 const statusColors = {

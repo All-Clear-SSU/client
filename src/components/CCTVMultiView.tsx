@@ -15,23 +15,34 @@ interface CCTVMultiViewProps {
   onSelectSurvivor: (id: string) => void;
 }
 
-const statusIcons = {
+// 고정으로 보여줄 CCTV ID 목록
+const FIXED_CCTV_IDS = [1, 2, 3, 4];
+// const FIXED_CCTV_IDS = [1, 2, 3]; // CCTV 1~3만 고정
+// const FIXED_CCTV_IDS = [1, 2, 3, 4, 5]; // CCTV 1~5 고정
+
+const statusIcons: Record<Survivor["status"], string> = {
+  conscious: "👤",
   unconscious: "🛌",
   injured: "🤕",
   trapped: "🚪",
-  conscious: "👤",
-  lying: "누워 있음",
-  standing: "🚶‍♂️",
-} as const;
+  lying: "🛌",
+  standing: "🚶",
+  falling: "🛌",
+  crawling: "🧎",
+  sitting: "🪑🧍",
+};
 
-const statusText = {
+const statusText: Record<Survivor["status"], string> = {
+  conscious: "의식 있음",
   unconscious: "쓰러져 있음",
   injured: "부상",
   trapped: "갇힘",
-  conscious: "의식 있음",
   lying: "누워 있음",
   standing: "서 있음",
-} as const;
+  falling: "쓰러져 있음",
+  crawling: "기어가고 있음",
+  sitting: "앉아 있음",
+};
 
 type CctvTileProps = {
   survivor: Survivor;
@@ -420,26 +431,28 @@ export function CCTVMultiView({
     loadCctvInfo();
   }, []);
 
-  // ✅ CCTV 1-4는 고정으로 표시 + 생존자 탐지된 경우 해당 생존자 정보 표시
+  // ✅ 고정 CCTV ID 목록은 항상 표시 + 생존자 탐지된 경우 해당 생존자 정보 표시
   const fixedCctvs = (() => {
-    const fixedSlots: (Survivor | null)[] = [null, null, null, null]; // CCTV 1, 2, 3, 4
+    const fixedIdToIndex = new Map<number, number>();
+    FIXED_CCTV_IDS.forEach((id, index) => fixedIdToIndex.set(id, index));
+    const fixedSlots: (Survivor | null)[] = Array.from({ length: FIXED_CCTV_IDS.length }, () => null);
 
-    // 실제 생존자 중 CCTV 1-4에 해당하는 것 찾기
+    // 실제 생존자 중 고정 CCTV에 해당하는 것 찾기
     for (const survivor of survivors) {
       const cctvId = survivor.lastDetection?.cctvId;
-      if (cctvId && cctvId >= 1 && cctvId <= 4) {
-        const index = cctvId - 1;
-        const existing = fixedSlots[index];
+      const targetIndex = cctvId != null ? fixedIdToIndex.get(cctvId) : undefined; // null/undefined 모두 배제
+      if (targetIndex !== undefined) {
+        const existing = fixedSlots[targetIndex];
         // 같은 CCTV의 생존자가 여러 명이면 위험도 높은 것 선택
         if (!existing || survivor.riskScore > existing.riskScore) {
-          fixedSlots[index] = survivor;
+          fixedSlots[targetIndex] = survivor;
         }
       }
     }
 
     // ✅ 생존자가 없는 CCTV 슬롯은 더미 생존자 생성 (우선순위 점수 0)
     return fixedSlots.map((survivor, index) => {
-      const cctvId = index + 1;
+      const cctvId = FIXED_CCTV_IDS[index];
       if (survivor) {
         return survivor;
       }
@@ -483,9 +496,10 @@ export function CCTVMultiView({
   })();
 
   // ✅ WiFi 센서와 나머지 CCTV (5번 이상) 처리
-  const { wifiSurvivors, cctvSurvivors5Plus } = (() => {
+  const { wifiSurvivors, cctvSurvivorsNonFixed } = (() => {
     const wifiMap = new Map<string, Survivor>();
     const cctvMap = new Map<number, Survivor>();
+    const fixedIdSet = new Set(FIXED_CCTV_IDS);
 
     for (const survivor of survivors) {
       const cctvId = survivor.lastDetection?.cctvId;
@@ -498,8 +512,8 @@ export function CCTVMultiView({
           wifiMap.set(wifiSensorId, survivor);
         }
       }
-      // CCTV 5번 이상만 추가 표시
-      else if (cctvId && cctvId > 4) {
+      // 고정 CCTV에 포함되지 않는 경우만 추가 표시
+      else if (cctvId && !fixedIdSet.has(cctvId)) {
         const existing = cctvMap.get(cctvId);
         if (!existing || survivor.riskScore > existing.riskScore) {
           cctvMap.set(cctvId, survivor);
@@ -509,19 +523,19 @@ export function CCTVMultiView({
 
     return {
       wifiSurvivors: Array.from(wifiMap.values()),
-      cctvSurvivors5Plus: Array.from(cctvMap.values()).sort((a, b) => b.riskScore - a.riskScore),
+      cctvSurvivorsNonFixed: Array.from(cctvMap.values()).sort((a, b) => b.riskScore - a.riskScore),
     };
   })();
 
-  // ✅ WiFi 센서를 상단에 고정 + CCTV 1-4 + 나머지 CCTV (5번 이상)
+  // ✅ WiFi 센서를 상단에 고정 + 고정 CCTV + 나머지 CCTV (비고정)
   // WiFi 센서 개수에 따라 CCTV 표시 개수 조정 (총 6개 유지)
-  const remainingSlots = 6 - wifiSurvivors.length;
-  const cctvToShow = remainingSlots >= 4
-    ? [...fixedCctvs, ...cctvSurvivors5Plus.slice(0, remainingSlots - 4)]
+  const remainingSlots = Math.max(6 - wifiSurvivors.length, 0);
+  const cctvToShow = remainingSlots >= FIXED_CCTV_IDS.length
+    ? [...fixedCctvs, ...cctvSurvivorsNonFixed.slice(0, remainingSlots - FIXED_CCTV_IDS.length)]
     : fixedCctvs.slice(0, remainingSlots);
 
   const topSurvivors = [...wifiSurvivors, ...cctvToShow];
-  const totalUniqueSources = wifiSurvivors.length + fixedCctvs.filter(s => s.riskScore > 0).length + cctvSurvivors5Plus.length;
+  const totalUniqueSources = wifiSurvivors.length + fixedCctvs.filter(s => s.riskScore > 0).length + cctvSurvivorsNonFixed.length;
 
   return (
     <div className="h-full bg-slate-900 flex flex-col">
