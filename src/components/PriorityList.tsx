@@ -192,7 +192,7 @@ export function PriorityList({ survivors, selectedId, onSelect, recentRecords, m
                 >
                   {/* WiFi 센서 생존자 특수 효과 (탐지 중일 때만) */}
                   {isWifiDetection && wifiStatus === 'detected' && (
-                    <div className="absolute inset-0 bg-gradient-to-r from-red-500/10 via-transparent to-red-500/10 animate-pulse pointer-events-none" />
+                    <div className="absolute inset-0 bg-linear-to-r from-red-500/10 via-transparent to-red-500/10 animate-pulse pointer-events-none" />
                   )}
 
                   <div className="flex items-start justify-between mb-2 relative z-10">

@@ -278,7 +278,7 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
     >
       {/* WiFi 센서 생존자 특수 효과 (탐지 중일 때만) */}
       {isWifiDetection && wifiStatus === 'detected' && (
-        <div className="absolute inset-0 bg-gradient-to-br from-red-500/10 via-transparent to-red-500/10 animate-pulse pointer-events-none" />
+        <div className="absolute inset-0 bg-linear-to-br from-red-500/10 via-transparent to-red-500/10 animate-pulse pointer-events-none" />
       )}
 
       {/* 상단 정보 */}
@@ -377,7 +377,7 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
           </div>
         ) : (
           // WiFi 생존자 또는 미탐지 CCTV: 빈 공간 유지 (높이 맞추기)
-          <div className="h-[28px]"></div>
+          <div className="h-7"></div>
         )}
       </div>
 
