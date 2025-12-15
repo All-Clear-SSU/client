@@ -1,11 +1,12 @@
 // src/components/CCTVMultiView.tsx
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 
 import { Camera, AlertTriangle, MapPin, Activity, Wifi } from "lucide-react";
-import { Badge } from "./ui/badge";
+// import { Badge } from "./ui/badge";
 import { ScrollArea } from "./ui/scroll-area";
 import type { Survivor } from "../lib/api";
+import { API_BASE, fetchAllCctvs, type CctvInfo } from "../lib/api";
 import WifiGraph from "./WifiGraph";
 
 interface CCTVMultiViewProps {
@@ -14,23 +15,34 @@ interface CCTVMultiViewProps {
   onSelectSurvivor: (id: string) => void;
 }
 
-const statusIcons = {
+// 고정으로 보여줄 CCTV ID 목록
+// const FIXED_CCTV_IDS = [1, 2, 3]; // CCTV 1~3만 고정
+// const FIXED_CCTV_IDS = [1, 2, 3, 4]; // CCTV 1~4만 고정
+const FIXED_CCTV_IDS = [1, 2, 3, 4, 5]; // CCTV 1~5 고정
+
+const statusIcons: Record<Survivor["status"], string> = {
+  conscious: "👤",
   unconscious: "🛌",
   injured: "🤕",
   trapped: "🚪",
-  conscious: "👤",
-  lying: "누워 있음",
-  standing: "🚶‍♂️",
-} as const;
+  lying: "🛌",
+  standing: "🚶",
+  falling: "🛌",
+  crawling: "🧎",
+  sitting: "🪑🧍",
+};
 
-const statusText = {
+const statusText: Record<Survivor["status"], string> = {
+  conscious: "의식 있음",
   unconscious: "쓰러져 있음",
   injured: "부상",
   trapped: "갇힘",
-  conscious: "의식 있음",
   lying: "누워 있음",
   standing: "서 있음",
-} as const;
+  falling: "쓰러져 있음",
+  crawling: "기어가고 있음",
+  sitting: "앉아 있음",
+};
 
 type CctvTileProps = {
   survivor: Survivor;
@@ -41,6 +53,7 @@ type CctvTileProps = {
 function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 🔥 기존 코드 (주석처리) - 하드코딩된 CCTV1 URL
   // const TEST_HLS_URL = "http://16.184.55.244:8080/streams/cctv1/playlist.m3u8";
@@ -58,9 +71,7 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
     // cctvId가 실제로 변경되었을 때만 URL 재생성
     if (prevCctvIdRef.current !== cctvId) {
       prevCctvIdRef.current = cctvId;
-      urlRef.current = cctvId
-        ? `${import.meta.env.VITE_API_BASE || "http://16.184.55.244:8080"}/streams/cctv${cctvId}/playlist.m3u8`
-        : undefined;
+      urlRef.current = cctvId ? `${API_BASE}/streams/cctv${cctvId}/playlist.m3u8` : undefined;
     }
   } else {
     // WiFi 센서인 경우 URL을 생성하지 않음
@@ -108,6 +119,13 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
   useEffect(() => {
     const video = videoRef.current;
 
+    const clearRetry = () => {
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
+    };
+
     if (!effectiveUrl || !video) {
       // URL이 없으면 HLS 정리
       if (hlsRef.current) {
@@ -115,6 +133,7 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
         hlsRef.current = null;
         currentLoadedUrlRef.current = undefined;
       }
+      clearRetry();
       return;
     }
 
@@ -125,46 +144,78 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
 
     currentLoadedUrlRef.current = effectiveUrl;
 
-    if (Hls.isSupported()) {
-      // ✅ HLS 인스턴스 재사용: 이미 있으면 loadSource만 호출
-      if (hlsRef.current) {
-        // 기존 HLS 인스턴스가 있으면 URL만 변경
+    const scheduleRetry = () => {
+      clearRetry();
+      retryTimeoutRef.current = setTimeout(() => {
+        if (hlsRef.current) {
+          hlsRef.current.destroy();
+          hlsRef.current = null;
+        }
+        currentLoadedUrlRef.current = undefined;
+        attachHls();
+      }, 1500);
+    };
+
+    function attachHls() {
+      const v = videoRef.current;
+      if (!v || !effectiveUrl) return;
+
+      if (Hls.isSupported()) {
+        if (!hlsRef.current) {
+          hlsRef.current = new Hls({
+            enableWorker: true,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+          });
+          const hls = hlsRef.current;
+          hls.attachMedia(v);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            v.play().catch(() => {});
+          });
+          hls.on(Hls.Events.ERROR, (_, data) => {
+            console.error(
+              "[HLS ERROR]",
+              data.type,
+              data.details,
+              data.response?.code,
+              effectiveUrl
+            );
+
+            if (!hlsRef.current || !data.fatal) return;
+
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+              hlsRef.current.startLoad();
+            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+              hlsRef.current.recoverMediaError();
+            } else {
+              scheduleRetry();
+            }
+          });
+        }
+
         hlsRef.current.loadSource(effectiveUrl);
-      } else {
-        // 처음 생성할 때만 새 인스턴스 생성
-        hlsRef.current = new Hls({
-          enableWorker: true,
-          maxBufferLength: 30,
-          maxMaxBufferLength: 60,
-        });
-
-        const hls = hlsRef.current;
-        hls.loadSource(effectiveUrl);
-        hls.attachMedia(video);
-
-        hls.on(Hls.Events.ERROR, (_, data) => {
-          console.error(
-            "[HLS ERROR]",
-            data.type,
-            data.details,
-            data.response?.code,
-            effectiveUrl
-          );
-        });
+      } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
+        v.src = effectiveUrl;
+        v.play().catch(() => {});
       }
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = effectiveUrl;
     }
+
+    attachHls();
 
     // ✅ cleanup 시 destroy하지 않음 - 컴포넌트 언마운트 시에만 정리
     return () => {
       // 아무것도 하지 않음 - HLS 인스턴스 유지
+      clearRetry();
     };
   }, [effectiveUrl]);
 
   // ✅ 컴포넌트 언마운트 시에만 HLS 정리
   useEffect(() => {
     return () => {
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
@@ -234,12 +285,12 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
       <div className="bg-slate-950/80 p-2 border-b border-slate-700 relative z-10">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            {/* ✅ WiFi 생존자는 WiFi 아이콘, CCTV 생존자는 번호 표시 */}
+            {/* ✅ WiFi 생존자는 WiFi 아이콘, CCTV 생존자는 번호 표시 (rank가 0이면 표시 안 함) */}
             {isWifiDetection ? (
               <Wifi className={`w-4 h-4 ${riskTextColor} ${wifiStatus === 'detected' ? "animate-pulse" : ""}`} />
-            ) : (
+            ) : survivor.rank > 0 ? (
               <span className="text-white">{survivor.rank}.</span>
-            )}
+            ) : null}
             <AlertTriangle
               className={`w-4 h-4 ${riskTextColor} ${isWifiDetection && wifiStatus === 'detected' ? "animate-pulse" : ""}`}
             />
@@ -252,26 +303,12 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
                 <span className="text-green-400">생존자 미탐지</span>
               )
             ) : (
-              <span className={riskTextColor}>{survivor.riskScore.toFixed(1)}</span>
+              <span className={riskTextColor}>
+                {survivor.riskScore === 0 ? "0.0 (생존자 미탐지)" : survivor.riskScore.toFixed(1)}
+              </span>
             )}
           </div>
 
-          <Badge
-            variant="outline"
-            className={`text-xs ${
-              survivor.rescueStatus === "rescued"
-                ? "text-green-400 border-green-400"
-                : survivor.rescueStatus === "dispatched"
-                ? "text-white border-blue-600 bg-blue-600"
-                : "text-slate-300 border-slate-500"
-            }`}
-          >
-            {survivor.rescueStatus === "rescued"
-              ? "구조완료"
-              : survivor.rescueStatus === "dispatched"
-              ? "출동중"
-              : "대기"}
-          </Badge>
         </div>
 
         <div className="flex items-center gap-2 mt-1">
@@ -301,9 +338,11 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="text-center">
                 <Camera className="w-8 h-8 text-slate-600 mx-auto mb-1" />
-                <p className="text-slate-500 text-xs">Camera {survivor.rank}</p>
+                <p className="text-slate-500 text-xs">
+                  CCTV {cctvId || survivor.rank || "?"}
+                </p>
                 <p className="text-slate-500 text-xs mt-1">
-                  스트림 준비 중 (HLS URL 없음)
+                  {survivor.riskScore === 0 ? "생존자 미탐지" : "스트림 준비 중"}
                 </p>
               </div>
             </div>
@@ -317,10 +356,10 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
         </div>
       </div>
 
-      {/* 하단 상태 - WiFi 생존자는 상태 정보 표시 안 함 */}
+      {/* 하단 상태 - WiFi 생존자와 미탐지 CCTV는 상태 정보 표시 안 함 */}
       <div className="bg-slate-950/80 p-2 border-t border-slate-700">
-        {!isWifiDetection ? (
-          // CCTV 생존자: 상태 정보 표시
+        {!isWifiDetection && survivor.riskScore > 0 ? (
+          // CCTV 생존자 (탐지된 경우만): 상태 정보 표시
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className="text-xl">{statusIcons[survivor.status]}</span>
@@ -337,7 +376,7 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
             </div>
           </div>
         ) : (
-          // WiFi 생존자: 빈 공간 유지 (높이 맞추기)
+          // WiFi 생존자 또는 미탐지 CCTV: 빈 공간 유지 (높이 맞추기)
           <div className="h-[28px]"></div>
         )}
       </div>
@@ -354,43 +393,131 @@ export function CCTVMultiView({
   selectedId,
   onSelectSurvivor,
 }: CCTVMultiViewProps) {
-  // ✅ 같은 CCTV ID별로 그룹화하고, 가장 위험도 높은 생존자만 선택
-  // WiFi 센서 생존자는 WiFi 센서 ID별로 그룹화
-  const uniqueSurvivors = (() => {
-    const cctvMap = new Map<number, Survivor>();
+  // ✅ CCTV 위치 정보 로드
+  const [cctvInfoMap, setCctvInfoMap] = useState<Map<number, CctvInfo>>(new Map());
+
+  useEffect(() => {
+    async function loadCctvInfo() {
+      try {
+        const cctvs = await fetchAllCctvs();
+        const map = new Map<number, CctvInfo>();
+        for (const cctv of cctvs) {
+          map.set(cctv.id, cctv);
+        }
+        setCctvInfoMap(map);
+      } catch (err) {
+        console.error("CCTV 정보 로드 실패:", err);
+      }
+    }
+
+    loadCctvInfo();
+  }, []);
+
+  // ✅ 고정 CCTV ID 목록은 항상 표시 + 생존자 탐지된 경우 해당 생존자 정보 표시
+  const fixedCctvs = (() => {
+    const fixedIdToIndex = new Map<number, number>();
+    FIXED_CCTV_IDS.forEach((id, index) => fixedIdToIndex.set(id, index));
+    const fixedSlots: (Survivor | null)[] = Array.from({ length: FIXED_CCTV_IDS.length }, () => null);
+
+    // 실제 생존자 중 고정 CCTV에 해당하는 것 찾기
+    for (const survivor of survivors) {
+      const cctvId = survivor.lastDetection?.cctvId;
+      const targetIndex = cctvId != null ? fixedIdToIndex.get(cctvId) : undefined; // null/undefined 모두 배제
+      if (targetIndex !== undefined) {
+        const existing = fixedSlots[targetIndex];
+        // 같은 CCTV의 생존자가 여러 명이면 위험도 높은 것 선택
+        if (!existing || survivor.riskScore > existing.riskScore) {
+          fixedSlots[targetIndex] = survivor;
+        }
+      }
+    }
+
+    // ✅ 생존자가 없는 CCTV 슬롯은 더미 생존자 생성 (우선순위 점수 0)
+    return fixedSlots.map((survivor, index) => {
+      const cctvId = FIXED_CCTV_IDS[index];
+      if (survivor) {
+        return survivor;
+      }
+
+      // ✅ CCTV 위치 정보 가져오기
+      const cctvInfo = cctvInfoMap.get(cctvId);
+      const location = cctvInfo?.location?.buildingName || `CCTV ${cctvId}`;
+      const floor = cctvInfo?.location?.floor ?? 0;
+      const room = cctvInfo?.location?.fullAddress ||
+                   (cctvInfo?.location ? `${cctvInfo.location.floor}층 ${cctvInfo.location.roomNumber}` : `CCTV ${cctvId} 구역`);
+
+      // 더미 생존자 생성 - 생존자 미탐지 상태여도 스트리밍 표시
+      return {
+        id: `cctv-${cctvId}-empty`,
+        rank: 0,
+        riskScore: 0, // ✅ 생존자 미탐지 상태는 점수 0
+        location,
+        floor,
+        room,
+        status: "conscious" as const,
+        detectionMethod: "cctv" as const,
+        rescueStatus: "pending" as const,
+        x: 0,
+        y: 0,
+        // ✅ lastDetection에 cctvId를 명확히 포함하여 스트리밍 URL 생성 가능하도록 수정
+        lastDetection: {
+          id: 0,
+          survivorId: 0,
+          cctvId,
+          detectionType: "CCTV" as const,
+          detectedAt: new Date().toISOString(),
+          detectedStatus: "미탐지",
+          confidence: 0,
+          aiAnalysisResult: "생존자 미탐지 - 실시간 모니터링 중",
+          aiModelVersion: "N/A",
+          imageUrl: null,
+          videoUrl: null,
+        },
+      } as Survivor;
+    });
+  })();
+
+  // ✅ WiFi 센서와 나머지 CCTV (5번 이상) 처리
+  const { wifiSurvivors, cctvSurvivorsNonFixed } = (() => {
     const wifiMap = new Map<string, Survivor>();
+    const cctvMap = new Map<number, Survivor>();
+    const fixedIdSet = new Set(FIXED_CCTV_IDS);
 
     for (const survivor of survivors) {
       const cctvId = survivor.lastDetection?.cctvId;
       const wifiSensorId = survivor.wifiSensorId;
 
-      // ✅ WiFi 센서 생존자: WiFi 센서 ID별로 그룹화 (CCTV와 관계없이)
+      // WiFi 센서 생존자
       if (wifiSensorId) {
         const existing = wifiMap.get(wifiSensorId);
-        // ✅ WiFi 센서는 우선순위 적용 없이 첫 번째로 발견된 생존자만 저장
         if (!existing) {
           wifiMap.set(wifiSensorId, survivor);
         }
       }
-      // CCTV 생존자: CCTV ID별로 그룹화 (WiFi 센서가 아닌 경우만)
-      else if (cctvId) {
+      // 고정 CCTV에 포함되지 않는 경우만 추가 표시
+      else if (cctvId && !fixedIdSet.has(cctvId)) {
         const existing = cctvMap.get(cctvId);
-        // 해당 CCTV ID의 첫 생존자이거나, 더 높은 위험도를 가진 생존자인 경우 저장
         if (!existing || survivor.riskScore > existing.riskScore) {
           cctvMap.set(cctvId, survivor);
         }
       }
     }
 
-    // ✅ WiFi 생존자를 먼저 배치하고, 그 다음 CCTV 생존자를 위험도 순으로 배치
-    const wifiSurvivors = Array.from(wifiMap.values());
-    const cctvSurvivors = Array.from(cctvMap.values()).sort((a, b) => b.riskScore - a.riskScore);
-
-    return [...wifiSurvivors, ...cctvSurvivors];
+    return {
+      wifiSurvivors: Array.from(wifiMap.values()),
+      cctvSurvivorsNonFixed: Array.from(cctvMap.values()).sort((a, b) => b.riskScore - a.riskScore),
+    };
   })();
 
-  const topSurvivors = uniqueSurvivors.slice(0, 6);
-  const totalUniqueSources = uniqueSurvivors.length;
+  // ✅ WiFi 센서를 상단에 고정 + 고정 CCTV + 나머지 CCTV (비고정)
+  // WiFi 센서 개수에 따라 CCTV 표시 개수 조정 (총 6개 유지)
+  const remainingSlots = Math.max(6 - wifiSurvivors.length, 0);
+  const cctvToShow = remainingSlots >= FIXED_CCTV_IDS.length
+    ? [...fixedCctvs, ...cctvSurvivorsNonFixed.slice(0, remainingSlots - FIXED_CCTV_IDS.length)]
+    : fixedCctvs.slice(0, remainingSlots);
+
+  const topSurvivors = [...wifiSurvivors, ...cctvToShow];
+  const totalUniqueSources = wifiSurvivors.length + fixedCctvs.filter(s => s.riskScore > 0).length + cctvSurvivorsNonFixed.length;
 
   return (
     <div className="h-full bg-slate-900 flex flex-col">

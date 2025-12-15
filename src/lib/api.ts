@@ -9,10 +9,16 @@
 // }
 
 // ✅ 수정된 코드: 환경 변수로 백엔드 서버 URL 관리
-export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+// - 로컬: http://localhost:8080 (vite dev 서버에서 직접 백엔드 호출)
+// - 배포(기본): /api → Netlify `_redirects`로 백엔드 프록시
+const hostname = typeof window !== "undefined" ? window.location.hostname : "";
+const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
+const defaultApiBase = isLocalHost ? "http://localhost:8080" : "/api";
+
+export const API_BASE = import.meta.env.VITE_API_BASE || defaultApiBase;
 
 if (!import.meta.env.VITE_API_BASE) {
-  console.warn("⚠️ VITE_API_BASE가 설정되지 않음. 기본값 http://localhost:8080 사용");
+  console.warn(`⚠️ VITE_API_BASE가 설정되지 않음. 기본값 ${defaultApiBase} 사용`);
 }
 
 // ===============================
@@ -36,7 +42,10 @@ export type ApiSurvivor = {
     | "INJURED"
     | "TRAPPED"
     | "LYING_DOWN"
-    | "STANDING";
+    | "STANDING"
+    | "FALLING"
+    | "CRAWLING"
+    | "SITTING";
   detectionMethod: "WIFI" | "CCTV";
   rescueStatus: "WAITING" | "IN_RESCUE" | "RESCUED" | "CANCELED";
 };
@@ -88,7 +97,10 @@ export type Survivor = {
     | "injured"
     | "trapped"
     | "lying"
-    | "standing";
+    | "standing"
+    | "falling"
+    | "crawling"
+    | "sitting";
 
   detectionMethod: "wifi" | "cctv";
   rescueStatus: "pending" | "dispatched" | "rescued";
@@ -121,7 +133,7 @@ export type Survivor = {
   /** 🔥 WiFi 센서 - 실시간 데이터 (WebSocket으로 업데이트) */
   wifiRealtimeData?: {
     timestamp?: string;
-    csi_data?: string | any;
+    csi_data?: string | number[] | null;
     analysis_result?: string;
     detected_status?: string;
     survivor_detected?: boolean;
@@ -135,14 +147,17 @@ export type Survivor = {
 //  매핑 테이블
 // ===============================
 
-const mapStatus = {
+const mapStatus: Record<ApiSurvivor["currentStatus"], Survivor["status"]> = {
   CONSCIOUS: "conscious",
   UNCONSCIOUS: "unconscious",
   INJURED: "injured",
   TRAPPED: "trapped",
   LYING_DOWN: "lying",
   STANDING: "standing",
-} as const;
+  FALLING: "falling",
+  CRAWLING: "crawling",
+  SITTING: "sitting",
+};
 
 const mapMethod = {
   CCTV: "cctv",
@@ -185,7 +200,7 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
           riskScore = priorityData.finalRiskScore ?? 0;
         } catch (err) {
           // 위험도 점수가 없는 경우 0으로 유지
-          console.warn(`생존자 ${a.id}의 위험도 점수를 가져올 수 없습니다.`);
+          console.warn(`생존자 ${a.id}의 위험도 점수를 가져올 수 없습니다.`, err);
         }
       }
 
@@ -194,7 +209,7 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
         lastDetection = await fetchLatestDetection(String(a.id));
       } catch (err) {
         // Detection 정보가 없는 경우 null 유지
-        console.warn(`생존자 ${a.id}의 Detection 정보를 가져올 수 없습니다.`);
+        console.warn(`생존자 ${a.id}의 Detection 정보를 가져올 수 없습니다.`, err);
       }
 
       return {
@@ -206,7 +221,7 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
         floor: a.location?.floor ?? 0,
         room: a.location?.fullAddress ?? a.location?.roomNumber ?? "-",
 
-        status: mapStatus[a.currentStatus],
+        status: mapStatus[a.currentStatus] ?? "standing",
         detectionMethod: mapMethod[a.detectionMethod],
         rescueStatus: mapRescue[a.rescueStatus],
 
@@ -221,6 +236,9 @@ export async function fetchSurvivors(): Promise<Survivor[]> {
 
         /** ✅ WiFi 센서 ID 설정 (WiFi Detection인 경우) */
         wifiSensorId: lastDetection?.wifiSensorId ? String(lastDetection.wifiSensorId) : null,
+
+        /** ✅ CCTV 생존자의 경우 초기 탐지 시간 설정 (타임아웃 체크용) */
+        lastCctvDetectedAt: a.detectionMethod === "CCTV" ? new Date() : null,
       };
     })
   );
@@ -247,8 +265,10 @@ export async function updateRescueStatus(
 //  오탐 제거
 // ===============================
 
-export async function deleteSurvivor(id: string) {
-  const res = await fetch(`${API_BASE}/survivors/${id}`, { method: "DELETE" });
+export type DeleteReason = "TIMEOUT" | "MANUAL";
+
+export async function deleteSurvivor(id: string, reason: DeleteReason = "MANUAL") {
+  const res = await fetch(`${API_BASE}/survivors/${id}?reason=${reason}`, { method: "DELETE" });
   if (!res.ok) throw new Error("오탐 제거 실패");
 }
 
@@ -273,7 +293,16 @@ export type AiAnalysis = {
 };
 
 export async function fetchAiAnalysis(survivorId: string): Promise<AiAnalysis> {
-  const res = await fetch(`${API_BASE}/detections/survivor/${survivorId}/analysis`);
+  // ✅ 캐시 무효화를 위한 타임스탬프 추가
+  const timestamp = new Date().getTime();
+  const res = await fetch(`${API_BASE}/detections/survivor/${survivorId}/analysis?_t=${timestamp}`, {
+    cache: 'no-store', // 브라우저 캐시를 사용하지 않도록 설정
+    headers: {
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    }
+  });
   if (!res.ok) throw new Error("AI 분석 정보를 가져오지 못했습니다.");
   return await res.json();
 }
@@ -312,4 +341,111 @@ export async function fetchStreamUrl(
   const res = await fetch(`${API_BASE}/cctvs/streams/${cctvId}`);
   if (!res.ok) throw new Error("스트림 URL을 가져오지 못했습니다.");
   return await res.json();
+}
+
+// ===============================
+//  WiFi 센서 정보 가져오기
+// ===============================
+
+export type WifiSensor = {
+  id: number;
+  sensorCode: string;
+  location: {
+    id: number;
+    buildingName: string;
+    floor: number;
+    roomNumber: string;
+    fullAddress: string;
+  };
+  isActive: boolean;
+  lastActiveAt: string | null;
+};
+
+export async function fetchWifiSensor(sensorId: number): Promise<WifiSensor | null> {
+  try {
+    const res = await fetch(`${API_BASE}/wifi-sensors`);
+    if (!res.ok) return null;
+    const sensors: WifiSensor[] = await res.json();
+    return sensors.find(s => s.id === sensorId) || null;
+  } catch {
+    return null;
+  }
+}
+
+// ===============================
+//  CCTV 정보 가져오기
+// ===============================
+
+export type CctvInfo = {
+  id: number;
+  cctvCode: string;
+  location: {
+    id: number;
+    buildingName: string;
+    floor: number;
+    roomNumber: string;
+    fullAddress: string;
+  };
+  isActive: boolean;
+  lastActiveAt: string | null;
+};
+
+export async function fetchCctvInfo(cctvId: number): Promise<CctvInfo | null> {
+  try {
+    const res = await fetch(`${API_BASE}/cctvs/${cctvId}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchAllCctvs(): Promise<CctvInfo[]> {
+  try {
+    const res = await fetch(`${API_BASE}/cctvs`);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+// ===============================
+//  최근 생존자 기록 (타임아웃 스냅샷)
+// ===============================
+
+export type RecentSurvivorRecord = {
+  id: number;
+  survivorId: number;
+  survivorNumber: number;
+  buildingName?: string | null;
+  floor?: number | null;
+  roomNumber?: string | null;
+  fullAddress?: string | null;
+  lastDetectedAt?: string | null;
+  lastPose?: ApiSurvivor["currentStatus"] | null;
+  lastRiskScore?: number | null;
+  detectionMethod?: "WIFI" | "CCTV" | null;
+  cctvId?: number | null;
+  wifiSensorId?: number | null;
+  aiAnalysisResult?: string | null;
+  aiSummary?: string | null;
+  archivedAt: string;
+};
+
+export type RecentRecordEvent = {
+  type: "added" | "deleted";
+  record?: RecentSurvivorRecord | null;
+  recordId?: number | null;
+};
+
+export async function fetchRecentSurvivors(hours = 48): Promise<RecentSurvivorRecord[]> {
+  const res = await fetch(`${API_BASE}/recent-survivors?hours=${hours}`);
+  if (!res.ok) throw new Error("최근 생존자 기록을 가져오지 못했습니다.");
+  return await res.json();
+}
+
+export async function deleteRecentSurvivor(id: number) {
+  const res = await fetch(`${API_BASE}/recent-survivors/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("최근 기록 삭제 실패");
 }

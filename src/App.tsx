@@ -7,29 +7,38 @@ import { DetailPanel } from "./components/DetailPanel";
 import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 
-import type { Survivor, Detection } from "./lib/api";
-import { fetchSurvivors, updateRescueStatus, deleteSurvivor } from "./lib/api";
+import type { Survivor } from "./lib/api";
+import {
+  fetchSurvivors,
+  updateRescueStatus,
+  deleteSurvivor,
+  fetchWifiSensor,
+  fetchRecentSurvivors,
+  deleteRecentSurvivor,
+  type WifiSensor,
+  type RecentSurvivorRecord,
+  type RecentRecordEvent,
+} from "./lib/api";
 
 import { getStompClient } from "./lib/socket";
 import type { IMessage, StompSubscription } from "@stomp/stompjs";
 
-// 🔥 기존 코드 (주석처리) - 라이브 스트림 API는 동적 URL 생성으로 대체됨
-// import {
-//   startLiveStream,
-//   getLiveStreamUrl,
-// } from "./lib/liveStreamApi";
-
 export default function App() {
   const [survivors, setSurvivors] = useState<Survivor[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [wifiSensor1Info, setWifiSensor1Info] = useState<WifiSensor | null>(null);
+  const [currentTime, setCurrentTime] = useState<string>("");
+  const [currentDate, setCurrentDate] = useState<string>("");
+  const [recentRecords, setRecentRecords] = useState<RecentSurvivorRecord[]>([]);
+  const [listMode, setListMode] = useState<"realtime" | "recent">("realtime"); // 좌측 탭 전환 상태
 
   const clientRef = useRef(getStompClient());
   const subsRef = useRef<Record<string, StompSubscription>>({});
   const connectedRef = useRef(false);
 
-  // ✅ 타임아웃 설정 (60초)
-  const CCTV_TIMEOUT_MS = 60 * 1000; // 60초
-  const WIFI_TIMEOUT_MS = 60 * 1000; // 60초
+  // ✅ 타임아웃 설정
+  const CCTV_TIMEOUT_MS = 10 * 1000; // 10초 - CCTV 화면에서 사라진 생존자 빠른 제거 (오탐지 신속 처리 + 일시적 가림 허용)
+//  const WIFI_TIMEOUT_MS = 60 * 1000; // 60초(현재 사용하지 않아서 비활성화)
 
   /** ---------- helpers ---------- */
   const sortAndRank = (arr: Survivor[]) => {
@@ -76,7 +85,9 @@ export default function App() {
       if (typeof j === "number") return j;
       if (typeof j?.finalRiskScore === "number") return j.finalRiskScore;
       if (typeof j?.score === "number") return j.score;
-    } catch {}
+    } catch {
+      // noop: 파싱 실패 시 숫자 추출 로직으로 진행
+    }
 
     const m = raw.match(/-?\d+(\.\d+)?/);
     return m ? parseFloat(m[0]) : null;
@@ -109,6 +120,44 @@ export default function App() {
       connectedRef.current = false;
       client.deactivate();
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** ---------- WiFi 센서 1 정보 로드 ---------- */
+  useEffect(() => {
+    async function loadWifiSensor1() {
+      try {
+        const sensor = await fetchWifiSensor(1);
+        if (sensor) {
+          setWifiSensor1Info(sensor);
+        }
+      } catch (err) {
+        console.error("WiFi 센서 1 정보 로드 실패:", err);
+      }
+    }
+
+    loadWifiSensor1();
+  }, []);
+
+  /** ---------- 최근 기록 로드 (타임아웃 스냅샷) ---------- */
+  useEffect(() => {
+    let alive = true;
+
+    async function loadRecent() {
+      try {
+        const data = await fetchRecentSurvivors(48);
+        if (alive) setRecentRecords(data);
+      } catch (err) {
+        console.error("최근 생존자 기록 로드 실패:", err);
+      }
+    }
+
+    loadRecent();
+    const interval = setInterval(loadRecent, 60000); // 폴백: 60초 주기
+    return () => {
+      alive = false;
+      clearInterval(interval);
+    };
   }, []);
 
   /** ---------- 생존자 목록 로드 ---------- */
@@ -137,6 +186,51 @@ export default function App() {
               lastCctvDetectedAt: old.lastCctvDetectedAt,  // ✅ CCTV 마지막 탐지 시간 보존
             } : n;
           });
+
+          // ✅ WiFi 센서 ID 1의 더미 생존자를 항상 추가 (실제 생존자가 없어도 표시)
+          const hasWifiSensor1 = merged.some(s => s.wifiSensorId === "1");
+          if (!hasWifiSensor1) {
+            // WiFi 센서 1의 기존 데이터 보존
+            const existingWifiSensor1 = prev.find(p => p.wifiSensorId === "1");
+
+            // ✅ WiFi 센서 1 정보를 API에서 가져온 경우 사용
+            const location = wifiSensor1Info?.location?.buildingName || "WiFi 센서";
+            const floor = wifiSensor1Info?.location?.floor ?? 0;
+            const room = wifiSensor1Info?.location?.fullAddress ||
+                         (wifiSensor1Info?.location ? `${wifiSensor1Info.location.floor}층 ${wifiSensor1Info.location.roomNumber}` : "센서 ID: 1");
+
+            // ✅ 기존 생존자가 있으면 업데이트, 없으면 새로 생성
+            const wifiSensor1Survivor: Survivor = existingWifiSensor1 ? {
+              ...existingWifiSensor1,
+              // ✅ 위치 정보 업데이트
+              location,
+              floor,
+              room,
+            } : {
+              id: "wifi-sensor-1",
+              rank: 0,
+              location,
+              floor,
+              room,
+              status: "conscious" as const,
+              riskScore: 0,
+              rescueStatus: "pending" as const,
+              detectionMethod: "wifi" as const,
+              wifiSensorId: "1",
+              currentSurvivorDetected: false,
+              lastSurvivorDetectedAt: null,
+              wifiRealtimeData: null,
+              lastDetection: null,
+              lastCctvDetectedAt: null,
+              poseLabel: null,
+              poseConfidence: null,
+              x: 50,
+              y: 50,
+            };
+
+            merged.push(wifiSensor1Survivor);
+          }
+
           return sortAndRank(merged);
         });
 
@@ -154,11 +248,12 @@ export default function App() {
       alive = false;
       clearInterval(t);
     };
-  }, [selectedId]);
+  }, [selectedId, wifiSensor1Info]); // ✅ wifiSensor1Info가 변경되면 다시 로드
 
   /** ---------- ID 변경 시 재구독 ---------- */
   useEffect(() => {
     resubscribeAll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [survivors.map((s) => s.id).join("|"), connectedRef.current]);
 
   /** ---------- ✅ 타임아웃 기반 자동 제거 ---------- */
@@ -167,44 +262,46 @@ export default function App() {
       const now = new Date();
       const survivorsToRemove: string[] = [];
 
-      for (const survivor of survivors) {
-        // CCTV 생존자: 마지막 탐지 시간 체크
-        if (survivor.detectionMethod === 'cctv' && survivor.lastCctvDetectedAt) {
-          const timeSinceLastDetection = now.getTime() - survivor.lastCctvDetectedAt.getTime();
-          if (timeSinceLastDetection > CCTV_TIMEOUT_MS) {
-            console.log(`⏱️ CCTV 생존자 ${survivor.id} 타임아웃 (${Math.floor(timeSinceLastDetection / 1000)}초)`);
-            survivorsToRemove.push(survivor.id);
-          }
-        }
+      // ✅ 최신 survivors 상태를 가져오기 위해 setState의 함수형 업데이트 사용
+      setSurvivors((currentSurvivors) => {
+        for (const survivor of currentSurvivors) {
+          // CCTV 생존자: 마지막 탐지 시간 체크
+          if (survivor.detectionMethod === 'cctv' && survivor.lastCctvDetectedAt) {
+            // Date 객체로 변환 (문자열인 경우 대비)
+            const lastDetectedTime = survivor.lastCctvDetectedAt instanceof Date
+              ? survivor.lastCctvDetectedAt
+              : new Date(survivor.lastCctvDetectedAt);
 
-        // WiFi 생존자: 마지막 생존자 탐지 시간 체크
-        if (survivor.detectionMethod === 'wifi' && survivor.lastSurvivorDetectedAt) {
-          // currentSurvivorDetected가 false이고, 마지막 탐지 시간이 오래된 경우
-          if (!survivor.currentSurvivorDetected) {
-            const timeSinceLastDetection = now.getTime() - survivor.lastSurvivorDetectedAt.getTime();
-            if (timeSinceLastDetection > WIFI_TIMEOUT_MS) {
-              console.log(`⏱️ WiFi 생존자 ${survivor.id} 타임아웃 (${Math.floor(timeSinceLastDetection / 1000)}초)`);
+            const timeSinceLastDetection = now.getTime() - lastDetectedTime.getTime();
+
+            if (timeSinceLastDetection > CCTV_TIMEOUT_MS) {
               survivorsToRemove.push(survivor.id);
             }
           }
-        }
-      }
 
-      // 타임아웃된 생존자 제거
-      for (const id of survivorsToRemove) {
-        try {
-          await deleteSurvivor(id);
-          setSurvivors((prev) => prev.filter((s) => s.id !== id));
-          if (selectedId === id) setSelectedId(null);
-          toast.info(`생존자 #${id} 화면에서 벗어남 (자동 제거)`);
-        } catch (err) {
-          console.error(`생존자 ${id} 제거 실패:`, err);
+          // ✅ WiFi 생존자: 타임아웃 제거 로직 비활성화 (false 신호를 받아도 계속 표시)
+          // WiFi 센서는 수동으로만 제거 가능 (오탐지 신고 버튼 사용)
+        }
+
+        // 현재 상태를 변경 없이 반환 (제거는 아래에서 수행)
+        return currentSurvivors;
+      });
+
+          // 타임아웃된 생존자 제거
+          for (const id of survivorsToRemove) {
+            try {
+              await deleteSurvivor(id, "TIMEOUT");
+              setSurvivors((prev) => prev.filter((s) => s.id !== id));
+              setSelectedId((current) => current === id ? null : current);
+              toast.info(`생존자 #${id} 화면에서 벗어남 (자동 제거)`);
+            } catch (err) {
+              console.error(`❌ 생존자 ${id} 제거 실패:`, err);
         }
       }
     }, 10000); // 10초마다 체크
 
     return () => clearInterval(interval);
-  }, [survivors, selectedId, CCTV_TIMEOUT_MS, WIFI_TIMEOUT_MS]);
+  }, [CCTV_TIMEOUT_MS]); // ✅ survivors를 dependency에서 제거하여 interval 재설정 방지
 
   /** ---------- WebSocket 구독 관리 ---------- */
   function resubscribeAll() {
@@ -257,6 +354,7 @@ export default function App() {
                 if (x.id !== data.id) return x;
 
                 // ✅ lastDetection을 제외하고 나머지만 업데이트
+                // eslint-disable-next-line @typescript-eslint/no-unused-vars
                 const { lastDetection, ...restData } = data;
                 return {
                   ...x,
@@ -276,6 +374,7 @@ export default function App() {
         const topic = `/topic/survivor/${id}/detections`;
 
         const sub = client.subscribe(topic, async (msg: IMessage) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           let data: any;
           try {
             data = JSON.parse(msg.body);
@@ -298,7 +397,8 @@ export default function App() {
                 poseLabel: data.detectedStatus ?? x.poseLabel,
                 poseConfidence: data.confidence ?? x.poseConfidence,
                 wifiSensorId: data.wifiSensorId ? String(data.wifiSensorId) : x.wifiSensorId,
-                // ✅ CCTV Detection 시 마지막 탐지 시간 기록
+                // ✅ CCTV Detection 메시지를 받으면 항상 마지막 탐지 시간을 현재 시간으로 업데이트
+                // WebSocket으로 Detection 메시지가 온 것 자체가 실시간 탐지를 의미
                 lastCctvDetectedAt: isCctvDetection ? new Date() : x.lastCctvDetectedAt,
               };
             });
@@ -323,14 +423,15 @@ export default function App() {
                     const survivorDetected = wifiData.survivor_detected === true;
                     const now = new Date();
 
-                    // amplitude 배열을 CSI 데이터로 사용
-                    const csiDataStr = wifiData.amplitude
-                      ? (Array.isArray(wifiData.amplitude) ? wifiData.amplitude.join(',') : String(wifiData.amplitude))
-                      : wifiData.csi_data;
+                    // csi_amplitude_summary 배열을 CSI 데이터로 사용
+                    const csiAmplitude = wifiData.csi_amplitude_summary || wifiData.amplitude;
+                    const csiDataStr = csiAmplitude
+                      ? (Array.isArray(csiAmplitude) ? csiAmplitude.join(', ') : String(csiAmplitude))
+                      : wifiData.csi_data || wifiData.analysis_result;
 
                     const realtimeData = {
                       timestamp: wifiData.timestamp || new Date().toISOString(),
-                      csi_data: csiDataStr || wifiData.csi_data,
+                      csi_data: csiDataStr,
                       analysis_result: wifiData.analysis_result,
                       detected_status: wifiData.detected_status,
                       survivor_detected: survivorDetected,
@@ -398,14 +499,15 @@ export default function App() {
                 const survivorDetected = wifiData.survivor_detected === true;
                 const now = new Date();
 
-                // amplitude 배열을 CSI 데이터로 사용
-                const csiDataStr = wifiData.amplitude
-                  ? (Array.isArray(wifiData.amplitude) ? wifiData.amplitude.join(',') : String(wifiData.amplitude))
-                  : wifiData.csi_data;
+                // csi_amplitude_summary 배열을 CSI 데이터로 사용
+                const csiAmplitude = wifiData.csi_amplitude_summary || wifiData.amplitude;
+                const csiDataStr = csiAmplitude
+                  ? (Array.isArray(csiAmplitude) ? csiAmplitude.join(', ') : String(csiAmplitude))
+                  : wifiData.csi_data || wifiData.analysis_result;
 
                 const realtimeData = {
                   timestamp: wifiData.timestamp || new Date().toISOString(),
-                  csi_data: csiDataStr || wifiData.csi_data,
+                  csi_data: csiDataStr,
                   analysis_result: wifiData.analysis_result,
                   detected_status: wifiData.detected_status,
                   survivor_detected: survivorDetected,
@@ -429,25 +531,69 @@ export default function App() {
         subsRef.current[`${id}-wifi-signal`] = wifiSub;
       }
     }
+
+    // 최근 기록 실시간 구독 (공용 토픽)
+    if (!subsRef.current["recent-records"]) {
+      const sub = client.subscribe("/topic/recent-survivors", (msg: IMessage) => {
+        try {
+          const event = JSON.parse(msg.body) as RecentRecordEvent;
+          if (event.type === "added" && event.record) {
+            setRecentRecords((prev) => {
+              const others = prev.filter((r) => r.id !== event.record!.id);
+              return [...others, event.record!].sort(
+                (a, b) => new Date(b.archivedAt).getTime() - new Date(a.archivedAt).getTime()
+              );
+            });
+          } else if (event.type === "deleted" && event.recordId != null) {
+            setRecentRecords((prev) => prev.filter((r) => r.id !== event.recordId));
+          }
+        } catch (err) {
+          console.error("recent-survivors 이벤트 처리 실패:", err);
+        }
+      });
+      subsRef.current["recent-records"] = sub;
+    }
   }
 
   /** ---------- 액션 ---------- */
-  const handleDispatchRescue = async (id: string) => {
+  const handleDispatchRescue = async (id: string, next: "IN_RESCUE" | "WAITING") => {
     try {
-      await updateRescueStatus(id, "IN_RESCUE");
+      await updateRescueStatus(id, next);
       setSurvivors((prev) =>
         prev.map((s) =>
-          s.id === id ? { ...s, rescueStatus: "dispatched" } : s
+          s.id === id
+            ? { ...s, rescueStatus: next === "IN_RESCUE" ? "dispatched" : "pending" }
+            : s
         )
       );
-      toast.success("🚑 구조팀 출동!");
+      toast.success(next === "IN_RESCUE" ? "🚑 구조팀 출동!" : "⏪ 출동 취소, 대기 상태로 전환");
     } catch {
-      toast.error("구조팀 파견 실패");
+      toast.error("구조 상태 변경 실패");
+    }
+  };
+
+  const handleDeleteRecentRecord = async (recordId: number) => {
+    const confirmed = window.confirm("이 최근 기록을 삭제할까요?");
+    if (!confirmed) return;
+
+    try {
+      await deleteRecentSurvivor(recordId);
+      setRecentRecords((prev) => prev.filter((r) => r.id !== recordId));
+      toast.success("최근 기록이 삭제되었습니다.");
+    } catch (err) {
+      console.error(err);
+      toast.error("최근 기록 삭제 실패");
     }
   };
 
   const handleReportFalsePositive = async (id: string) => {
     try {
+      // ✅ WiFi 센서 1의 더미 생존자는 제거할 수 없음
+      if (id === "wifi-sensor-1") {
+        toast.error("WiFi 센서 1은 제거할 수 없습니다");
+        return;
+      }
+
       await deleteSurvivor(id);
       setSurvivors((prev) => prev.filter((s) => s.id !== id));
       if (selectedId === id) setSelectedId(null);
@@ -468,11 +614,40 @@ export default function App() {
   const alertLevel =
     pendingCount >= 5 ? "high" : pendingCount >= 3 ? "medium" : "low";
 
+  /** ---------- KST 시계 ---------- */
+  useEffect(() => {
+    const formatterTime = new Intl.DateTimeFormat("ko-KR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      timeZone: "Asia/Seoul",
+    });
+
+    const formatterDate = new Intl.DateTimeFormat("ko-KR", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      timeZone: "Asia/Seoul",
+    });
+
+    const tick = () => {
+      const now = new Date();
+      setCurrentTime(formatterTime.format(now));
+      setCurrentDate(formatterDate.format(now));
+    };
+
+    tick(); // 초기 1회
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
+
   /** ---------- 렌더 ---------- */
   return (
     <div className="h-screen w-screen bg-slate-950 flex flex-col overflow-hidden">
       <Header
-        currentTime="15:29:14"
+        currentTime={currentTime}
+        currentDate={currentDate}
         alertLevel={alertLevel}
         totalSurvivors={survivors.length}
       />
@@ -483,6 +658,10 @@ export default function App() {
             survivors={survivors}
             selectedId={selectedId}
             onSelect={setSelectedId}
+            recentRecords={recentRecords}
+            mode={listMode}
+            onModeChange={setListMode}
+            onDeleteRecent={handleDeleteRecentRecord}
           />
         </div>
 

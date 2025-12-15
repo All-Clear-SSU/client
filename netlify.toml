@@ -11,3 +11,10 @@
   to = "http://16.184.55.244:8080/ws"
   status = 200
   force = true
+
+# SockJS 하위 경로까지 프록시
+[[redirects]]
+  from = "/ws/*"
+  to = "http://16.184.55.244:8080/ws/:splat"
+  status = 200
+  force = true

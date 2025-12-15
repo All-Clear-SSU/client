@@ -4,11 +4,12 @@ import { Badge } from './ui/badge';
 
 interface HeaderProps {
   currentTime: string;
+  currentDate: string;
   alertLevel: 'high' | 'medium' | 'low';
   totalSurvivors: number;
 }
 
-export function Header({ currentTime, alertLevel, totalSurvivors }: HeaderProps) {
+export function Header({ currentTime, currentDate, alertLevel, totalSurvivors }: HeaderProps) {
   const alertColors = {
     high: 'bg-red-600 hover:bg-red-700',
     medium: 'bg-orange-500 hover:bg-orange-600',
@@ -38,7 +39,7 @@ export function Header({ currentTime, alertLevel, totalSurvivors }: HeaderProps)
       <div className="flex items-center gap-6">
         <div className="text-right">
           <div className="text-white">{currentTime}</div>
-          <div className="text-slate-400 text-xs">2025. 10. 15.</div>
+          <div className="text-slate-400 text-xs">{currentDate}</div>
         </div>
 
         <Badge className={`${alertColors[alertLevel]} text-white border-0`}>
