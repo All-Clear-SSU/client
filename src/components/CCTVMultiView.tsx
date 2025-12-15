@@ -46,11 +46,21 @@ const statusText: Record<Survivor["status"], string> = {
 
 type CctvTileProps = {
   survivor: Survivor;
+  tileKey: string;
   isSelected: boolean;
   onClick: () => void;
 };
 
-function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
+type HlsPoolEntry = {
+  hls: Hls;
+  currentUrl?: string;
+  cleanupTimer?: ReturnType<typeof setTimeout> | null;
+};
+
+// HLS 인스턴스를 소스별로 보존해서 타일이 잠깐 사라져도 재생 상태를 유지
+const hlsPool = new Map<string, HlsPoolEntry>();
+
+function CctvTile({ survivor, tileKey, isSelected, onClick }: CctvTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -129,8 +139,7 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
     if (!effectiveUrl || !video) {
       // URL이 없으면 HLS 정리
       if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
+        hlsRef.current.detachMedia();
         currentLoadedUrlRef.current = undefined;
       }
       clearRetry();
@@ -142,14 +151,21 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
       return;
     }
 
-    currentLoadedUrlRef.current = effectiveUrl;
+    let entry = hlsPool.get(tileKey);
+    if (entry) {
+      hlsRef.current = entry.hls;
+      currentLoadedUrlRef.current = entry.currentUrl;
+      if (entry.cleanupTimer) {
+        clearTimeout(entry.cleanupTimer);
+        entry.cleanupTimer = null;
+      }
+    }
 
     const scheduleRetry = () => {
       clearRetry();
       retryTimeoutRef.current = setTimeout(() => {
         if (hlsRef.current) {
-          hlsRef.current.destroy();
-          hlsRef.current = null;
+          hlsRef.current.detachMedia();
         }
         currentLoadedUrlRef.current = undefined;
         attachHls();
@@ -162,12 +178,11 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
 
       if (Hls.isSupported()) {
         if (!hlsRef.current) {
-          hlsRef.current = new Hls({
+          const hls = new Hls({
             enableWorker: true,
             maxBufferLength: 30,
             maxMaxBufferLength: 60,
           });
-          const hls = hlsRef.current;
           hls.attachMedia(v);
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
             v.play().catch(() => {});
@@ -191,9 +206,20 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
               scheduleRetry();
             }
           });
+
+          hlsRef.current = hls;
+          hlsPool.set(tileKey, { hls, currentUrl: effectiveUrl });
+        } else {
+          hlsRef.current.attachMedia(v);
+          hlsRef.current.startLoad();
         }
 
-        hlsRef.current.loadSource(effectiveUrl);
+        if (currentLoadedUrlRef.current !== effectiveUrl) {
+          hlsRef.current.loadSource(effectiveUrl);
+          currentLoadedUrlRef.current = effectiveUrl;
+          const poolEntry = hlsPool.get(tileKey);
+          if (poolEntry) poolEntry.currentUrl = effectiveUrl;
+        }
       } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
         v.src = effectiveUrl;
         v.play().catch(() => {});
@@ -204,7 +230,10 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
 
     // ✅ cleanup 시 destroy하지 않음 - 컴포넌트 언마운트 시에만 정리
     return () => {
-      // 아무것도 하지 않음 - HLS 인스턴스 유지
+      // HLS 인스턴스는 풀에 보존하고, 비디오와만 분리
+      if (hlsRef.current) {
+        hlsRef.current.detachMedia();
+      }
       clearRetry();
     };
   }, [effectiveUrl]);
@@ -217,7 +246,16 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
         retryTimeoutRef.current = null;
       }
       if (hlsRef.current) {
-        hlsRef.current.destroy();
+        hlsRef.current.detachMedia();
+        const entry = hlsPool.get(tileKey);
+        if (entry) {
+          entry.cleanupTimer = setTimeout(() => {
+            entry.hls.destroy();
+            hlsPool.delete(tileKey);
+          }, 2 * 60 * 1000); // 2분 후 실제 정리
+        } else {
+          hlsRef.current.destroy();
+        }
         hlsRef.current = null;
       }
     };
@@ -509,6 +547,12 @@ export function CCTVMultiView({
     };
   })();
 
+  const getTileKey = (survivor: Survivor) => {
+    if (survivor.wifiSensorId) return `wifi-${survivor.wifiSensorId}`;
+    if (survivor.lastDetection?.cctvId != null) return `cctv-${survivor.lastDetection.cctvId}`;
+    return survivor.id;
+  };
+
   // ✅ WiFi 센서를 상단에 고정 + 고정 CCTV + 나머지 CCTV (비고정)
   // WiFi 센서 개수에 따라 CCTV 표시 개수 조정 (총 6개 유지)
   const remainingSlots = Math.max(6 - wifiSurvivors.length, 0);
@@ -536,7 +580,8 @@ export function CCTVMultiView({
           <div className="grid grid-cols-2 gap-4">
             {topSurvivors.map((survivor) => (
               <CctvTile
-                key={survivor.id}
+                key={getTileKey(survivor)}
+                tileKey={getTileKey(survivor)}
                 survivor={survivor}
                 isSelected={selectedId === survivor.id}
                 onClick={() => onSelectSurvivor(survivor.id)}
