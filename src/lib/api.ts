@@ -265,8 +265,10 @@ export async function updateRescueStatus(
 //  오탐 제거
 // ===============================
 
-export async function deleteSurvivor(id: string) {
-  const res = await fetch(`${API_BASE}/survivors/${id}`, { method: "DELETE" });
+export type DeleteReason = "TIMEOUT" | "MANUAL";
+
+export async function deleteSurvivor(id: string, reason: DeleteReason = "MANUAL") {
+  const res = await fetch(`${API_BASE}/survivors/${id}?reason=${reason}`, { method: "DELETE" });
   if (!res.ok) throw new Error("오탐 제거 실패");
 }
 
@@ -406,4 +408,44 @@ export async function fetchAllCctvs(): Promise<CctvInfo[]> {
   } catch {
     return [];
   }
+}
+
+// ===============================
+//  최근 생존자 기록 (타임아웃 스냅샷)
+// ===============================
+
+export type RecentSurvivorRecord = {
+  id: number;
+  survivorId: number;
+  survivorNumber: number;
+  buildingName?: string | null;
+  floor?: number | null;
+  roomNumber?: string | null;
+  fullAddress?: string | null;
+  lastDetectedAt?: string | null;
+  lastPose?: ApiSurvivor["currentStatus"] | null;
+  lastRiskScore?: number | null;
+  detectionMethod?: "WIFI" | "CCTV" | null;
+  cctvId?: number | null;
+  wifiSensorId?: number | null;
+  aiAnalysisResult?: string | null;
+  aiSummary?: string | null;
+  archivedAt: string;
+};
+
+export type RecentRecordEvent = {
+  type: "added" | "deleted";
+  record?: RecentSurvivorRecord | null;
+  recordId?: number | null;
+};
+
+export async function fetchRecentSurvivors(hours = 48): Promise<RecentSurvivorRecord[]> {
+  const res = await fetch(`${API_BASE}/recent-survivors?hours=${hours}`);
+  if (!res.ok) throw new Error("최근 생존자 기록을 가져오지 못했습니다.");
+  return await res.json();
+}
+
+export async function deleteRecentSurvivor(id: number) {
+  const res = await fetch(`${API_BASE}/recent-survivors/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("최근 기록 삭제 실패");
 }

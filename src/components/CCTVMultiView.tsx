@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 
 import { Camera, AlertTriangle, MapPin, Activity, Wifi } from "lucide-react";
-import { Badge } from "./ui/badge";
+// import { Badge } from "./ui/badge";
 import { ScrollArea } from "./ui/scroll-area";
 import type { Survivor } from "../lib/api";
 import { API_BASE, fetchAllCctvs, type CctvInfo } from "../lib/api";
@@ -309,22 +309,6 @@ function CctvTile({ survivor, isSelected, onClick }: CctvTileProps) {
             )}
           </div>
 
-          <Badge
-            variant="outline"
-            className={`text-xs ${
-              survivor.rescueStatus === "rescued"
-                ? "text-green-400 border-green-400"
-                : survivor.rescueStatus === "dispatched"
-                ? "text-white border-blue-600 bg-blue-600"
-                : "text-slate-300 border-slate-500"
-            }`}
-          >
-            {survivor.rescueStatus === "rescued"
-              ? "구조완료"
-              : survivor.rescueStatus === "dispatched"
-              ? "출동중"
-              : "대기"}
-          </Badge>
         </div>
 
         <div className="flex items-center gap-2 mt-1">

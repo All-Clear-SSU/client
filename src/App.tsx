@@ -8,7 +8,17 @@ import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 
 import type { Survivor } from "./lib/api";
-import { fetchSurvivors, updateRescueStatus, deleteSurvivor, fetchWifiSensor, type WifiSensor } from "./lib/api";
+import {
+  fetchSurvivors,
+  updateRescueStatus,
+  deleteSurvivor,
+  fetchWifiSensor,
+  fetchRecentSurvivors,
+  deleteRecentSurvivor,
+  type WifiSensor,
+  type RecentSurvivorRecord,
+  type RecentRecordEvent,
+} from "./lib/api";
 
 import { getStompClient } from "./lib/socket";
 import type { IMessage, StompSubscription } from "@stomp/stompjs";
@@ -19,6 +29,8 @@ export default function App() {
   const [wifiSensor1Info, setWifiSensor1Info] = useState<WifiSensor | null>(null);
   const [currentTime, setCurrentTime] = useState<string>("");
   const [currentDate, setCurrentDate] = useState<string>("");
+  const [recentRecords, setRecentRecords] = useState<RecentSurvivorRecord[]>([]);
+  const [listMode, setListMode] = useState<"realtime" | "recent">("realtime"); // 좌측 탭 전환 상태
 
   const clientRef = useRef(getStompClient());
   const subsRef = useRef<Record<string, StompSubscription>>({});
@@ -125,6 +137,27 @@ export default function App() {
     }
 
     loadWifiSensor1();
+  }, []);
+
+  /** ---------- 최근 기록 로드 (타임아웃 스냅샷) ---------- */
+  useEffect(() => {
+    let alive = true;
+
+    async function loadRecent() {
+      try {
+        const data = await fetchRecentSurvivors(48);
+        if (alive) setRecentRecords(data);
+      } catch (err) {
+        console.error("최근 생존자 기록 로드 실패:", err);
+      }
+    }
+
+    loadRecent();
+    const interval = setInterval(loadRecent, 60000); // 폴백: 60초 주기
+    return () => {
+      alive = false;
+      clearInterval(interval);
+    };
   }, []);
 
   /** ---------- 생존자 목록 로드 ---------- */
@@ -254,15 +287,15 @@ export default function App() {
         return currentSurvivors;
       });
 
-      // 타임아웃된 생존자 제거
-      for (const id of survivorsToRemove) {
-        try {
-          await deleteSurvivor(id);
-          setSurvivors((prev) => prev.filter((s) => s.id !== id));
-          setSelectedId((current) => current === id ? null : current);
-          toast.info(`생존자 #${id} 화면에서 벗어남 (자동 제거)`);
-        } catch (err) {
-          console.error(`❌ 생존자 ${id} 제거 실패:`, err);
+          // 타임아웃된 생존자 제거
+          for (const id of survivorsToRemove) {
+            try {
+              await deleteSurvivor(id, "TIMEOUT");
+              setSurvivors((prev) => prev.filter((s) => s.id !== id));
+              setSelectedId((current) => current === id ? null : current);
+              toast.info(`생존자 #${id} 화면에서 벗어남 (자동 제거)`);
+            } catch (err) {
+              console.error(`❌ 생존자 ${id} 제거 실패:`, err);
         }
       }
     }, 10000); // 10초마다 체크
@@ -498,20 +531,58 @@ export default function App() {
         subsRef.current[`${id}-wifi-signal`] = wifiSub;
       }
     }
+
+    // 최근 기록 실시간 구독 (공용 토픽)
+    if (!subsRef.current["recent-records"]) {
+      const sub = client.subscribe("/topic/recent-survivors", (msg: IMessage) => {
+        try {
+          const event = JSON.parse(msg.body) as RecentRecordEvent;
+          if (event.type === "added" && event.record) {
+            setRecentRecords((prev) => {
+              const others = prev.filter((r) => r.id !== event.record!.id);
+              return [...others, event.record!].sort(
+                (a, b) => new Date(b.archivedAt).getTime() - new Date(a.archivedAt).getTime()
+              );
+            });
+          } else if (event.type === "deleted" && event.recordId != null) {
+            setRecentRecords((prev) => prev.filter((r) => r.id !== event.recordId));
+          }
+        } catch (err) {
+          console.error("recent-survivors 이벤트 처리 실패:", err);
+        }
+      });
+      subsRef.current["recent-records"] = sub;
+    }
   }
 
   /** ---------- 액션 ---------- */
-  const handleDispatchRescue = async (id: string) => {
+  const handleDispatchRescue = async (id: string, next: "IN_RESCUE" | "WAITING") => {
     try {
-      await updateRescueStatus(id, "IN_RESCUE");
+      await updateRescueStatus(id, next);
       setSurvivors((prev) =>
         prev.map((s) =>
-          s.id === id ? { ...s, rescueStatus: "dispatched" } : s
+          s.id === id
+            ? { ...s, rescueStatus: next === "IN_RESCUE" ? "dispatched" : "pending" }
+            : s
         )
       );
-      toast.success("🚑 구조팀 출동!");
+      toast.success(next === "IN_RESCUE" ? "🚑 구조팀 출동!" : "⏪ 출동 취소, 대기 상태로 전환");
     } catch {
-      toast.error("구조팀 파견 실패");
+      toast.error("구조 상태 변경 실패");
+    }
+  };
+
+  const handleDeleteRecentRecord = async (recordId: number) => {
+    const confirmed = window.confirm("이 최근 기록을 삭제할까요?");
+    if (!confirmed) return;
+
+    try {
+      await deleteRecentSurvivor(recordId);
+      setRecentRecords((prev) => prev.filter((r) => r.id !== recordId));
+      toast.success("최근 기록이 삭제되었습니다.");
+    } catch (err) {
+      console.error(err);
+      toast.error("최근 기록 삭제 실패");
     }
   };
 
@@ -587,6 +658,10 @@ export default function App() {
             survivors={survivors}
             selectedId={selectedId}
             onSelect={setSelectedId}
+            recentRecords={recentRecords}
+            mode={listMode}
+            onModeChange={setListMode}
+            onDeleteRecent={handleDeleteRecentRecord}
           />
         </div>
 

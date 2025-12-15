@@ -15,7 +15,7 @@ import WifiGraph from "./WifiGraph";
 interface DetailPanelProps {
   survivor: Survivor | null;
   survivors: Survivor[]; // 전체 생존자 목록 (같은 센서의 다른 생존자 찾기용)
-  onDispatchRescue: (id: string) => void;
+  onDispatchRescue: (id: string, next: "IN_RESCUE" | "WAITING") => void;
   onReportFalsePositive: (id: string) => void;
 }
 
@@ -545,8 +545,8 @@ export function DetailPanel({
       {/* Buttons */}
       <div className="p-4 border-t border-slate-700 space-y-2 shrink-0">
         <Button
-          onClick={() => onDispatchRescue(survivor.id)}
-          disabled={isDispatched || isRescued}
+          onClick={() => onDispatchRescue(survivor.id, "IN_RESCUE")}
+          disabled={isRescued}
           className={`w-full font-semibold ${
             isRescued
               ? `bg-slate-600 text-white cursor-not-allowed`
@@ -558,6 +558,16 @@ export function DetailPanel({
           <Send className="w-4 h-4 mr-2" />
           {isRescued ? "구조 완료됨" : isDispatched ? "출동 중..." : "구조팀 파견"}
         </Button>
+
+        {isDispatched && (
+          <Button
+            variant="outline"
+            className="w-full border-blue-400 text-blue-200 hover:bg-blue-600 hover:text-white transition"
+            onClick={() => onDispatchRescue(survivor.id, "WAITING")}
+          >
+            출동 취소 → 대기 전환
+          </Button>
+        )}
 
         <Button
           variant="outline"
