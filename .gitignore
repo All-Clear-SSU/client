@@ -12,3 +12,4 @@ WIFI_GRAPH_TEST_GUIDE.md
 current_layout.png
 test-mqtt-publisher.cjs
 test-wifi-mock.js
+*.png
