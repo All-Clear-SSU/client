@@ -64,6 +64,7 @@ client/
 ├─ tailwind.config.js   # Tailwind 설정
 ├─ netlify.toml         # 배포 / 프록시 설정 (사용 시)
 └─ README.md            # 프로젝트 문서
+```
 
 ### Step 3: 환경 변수 설정 및 의존성 설치
 프로젝트 루트에 `.env.local` 파일을 생성하고 다음 내용을 입력하여 환경변수를 주입합니다.
