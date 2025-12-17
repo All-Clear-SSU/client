@@ -110,7 +110,7 @@ curl -I http://localhost:8080/streams/cctv1/playlist.m3u8
 
 ---
 
-## ❓ 문제 발생 가능 상황 정리 (Troubleshooting)
+##  💡 문제 발생 가능 상황 정리 (Troubleshooting)
 
 | 문제 상황 | 해결 방법 |
 | :--- | :--- |
