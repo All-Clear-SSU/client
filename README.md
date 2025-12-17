@@ -30,6 +30,20 @@
 
 ## 📦 설치 및 실행
 
+### 1️⃣ 사전 요구사항 체크
+
+프론트엔드 실행 전에 아래 조건이 충족되어야 합니다.
+
+- **Node.js 20 이상** 설치 권장
+- 백엔드 서버가 **로컬에서 실행 중**이어야 함
+- 백엔드 CORS 설정에 **프론트 포트(기본 3000)** 이 허용되어 있어야 함
+
+---
+
+### 2️⃣ 코드 클론 및 프로젝트 이동
+
+터미널 또는 PowerShell을 열고 원하는 경로로 이동한 뒤  
+아래 명령어를 실행하여 레포지토리를 클론합니다.
+
 ```bash
-npm install
-npm run dev
+git clone https://github.com/All-Clear-SSU/client all-clear-client
