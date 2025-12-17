@@ -17,11 +17,10 @@ interface CCTVMultiViewProps {
 
 // 고정으로 보여줄 CCTV ID 목록
 // const FIXED_CCTV_IDS = [1, 2, 3]; // CCTV 1~3만 고정
-const FIXED_CCTV_IDS = [1, 3, 5]; // CCTV 1~3만 고정
-
+// const FIXED_CCTV_IDS = [1, 3, 5]; // CCTV 1~3만 고정
 // const FIXED_CCTV_IDS = [1, 2, 3, 4]; // CCTV 1~4만 고정
-// const FIXED_CCTV_IDS = [1, 2, 3, 4, 5]; // CCTV 1~5 고정
-// const FIXED_CCTV_IDS = []; // CCTV 1~5 고정
+const FIXED_CCTV_IDS = [1, 2, 3, 4, 5]; // CCTV 1~5 고정
+// const FIXED_CCTV_IDS = [1]; // CCTV 1~5 고정
 
 
 const statusIcons: Record<Survivor["status"], string> = {

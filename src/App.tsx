@@ -1,5 +1,5 @@
 // src/App.tsx
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Header } from "./components/Header";
 import { PriorityList } from "./components/PriorityList";
 import { CCTVMultiView } from "./components/CCTVMultiView";
@@ -37,8 +37,18 @@ export default function App() {
   const connectedRef = useRef(false);
 
   // ✅ 타임아웃 설정
-  const CCTV_TIMEOUT_MS = 10 * 1000; // 10초 - CCTV 화면에서 사라진 생존자 빠른 제거 (오탐지 신속 처리 + 일시적 가림 허용)
+  const CCTV_TIMEOUT_MS = 10 * 1000; // CCTV 마지막 탐지 후 10초 경과 시 타임아웃 처리
 //  const WIFI_TIMEOUT_MS = 60 * 1000; // 60초(현재 사용하지 않아서 비활성화)
+
+  // 최근 기록 즉시 새로고침 헬퍼
+  const refreshRecentRecords = useCallback(async () => {
+    try {
+      const data = await fetchRecentSurvivors(48);
+      setRecentRecords(data);
+    } catch (err) {
+      console.error("최근 생존자 기록 로드 실패:", err);
+    }
+  }, []);
 
   /** ---------- helpers ---------- */
   const sortAndRank = (arr: Survivor[]) => {
@@ -143,14 +153,10 @@ export default function App() {
   useEffect(() => {
     let alive = true;
 
-    async function loadRecent() {
-      try {
-        const data = await fetchRecentSurvivors(48);
-        if (alive) setRecentRecords(data);
-      } catch (err) {
-        console.error("최근 생존자 기록 로드 실패:", err);
-      }
-    }
+    const loadRecent = async () => {
+      await refreshRecentRecords();
+      if (!alive) return;
+    };
 
     loadRecent();
     const interval = setInterval(loadRecent, 60000); // 폴백: 60초 주기
@@ -158,7 +164,7 @@ export default function App() {
       alive = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [refreshRecentRecords]);
 
   /** ---------- 생존자 목록 로드 ---------- */
   useEffect(() => {
@@ -287,21 +293,23 @@ export default function App() {
         return currentSurvivors;
       });
 
-          // 타임아웃된 생존자 제거
-          for (const id of survivorsToRemove) {
-            try {
-              await deleteSurvivor(id, "TIMEOUT");
-              setSurvivors((prev) => prev.filter((s) => s.id !== id));
-              setSelectedId((current) => current === id ? null : current);
-              toast.info(`생존자 #${id} 화면에서 벗어남 (자동 제거)`);
-            } catch (err) {
-              console.error(`❌ 생존자 ${id} 제거 실패:`, err);
+      if (survivorsToRemove.length > 0) {
+        for (const id of survivorsToRemove) {
+          try {
+            await deleteSurvivor(id, "TIMEOUT");
+            setSurvivors((prev) => prev.filter((s) => s.id !== id));
+            setSelectedId((current) => current === id ? null : current);
+            toast.info(`생존자 #${id} 화면에서 벗어남 (자동 제거)`);
+          } catch (err) {
+            console.error(`❌ 생존자 ${id} 제거 실패:`, err);
+          }
         }
+        refreshRecentRecords(); // 백엔드 기록 즉시 반영
       }
     }, 10000); // 10초마다 체크
 
     return () => clearInterval(interval);
-  }, [CCTV_TIMEOUT_MS]); // ✅ survivors를 dependency에서 제거하여 interval 재설정 방지
+  }, [CCTV_TIMEOUT_MS, refreshRecentRecords]); // ✅ survivors를 dependency에서 제거하여 interval 재설정 방지
 
   /** ---------- WebSocket 구독 관리 ---------- */
   function resubscribeAll() {
